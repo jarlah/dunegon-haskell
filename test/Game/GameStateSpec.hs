@@ -41,6 +41,7 @@ mkFixture seed ppos pstats monsters = GameState
   , gsEvents      = [EvAttackHit]  -- stale, should be cleared by applyAction
   , gsVisible     = Set.empty       -- applyAction recomputes these
   , gsExplored    = Set.empty
+  , gsPrompt      = Nothing
   }
 
 -- | Player stats strong enough to one-shot anything normal.

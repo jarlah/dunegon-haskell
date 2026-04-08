@@ -39,6 +39,7 @@ library
     Game.Logic.MonsterAI
     Game.Logic.Progression
     Game.Logic.FOV
+    Game.Logic.Command
     Game.Render
     Game.Input
     Game.Audio
@@ -76,6 +77,7 @@ test-suite dungeon-haskell-test
     Game.Logic.CombatSpec
     Game.Logic.ProgressionSpec
     Game.Logic.FOVSpec
+    Game.Logic.CommandSpec
     Game.GameStateSpec
   build-depends:
     , dungeon-haskell

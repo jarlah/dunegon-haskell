@@ -10,6 +10,7 @@ import System.Random (newStdGen)
 import qualified Game.Audio as Audio
 import Game.GameState
 import Game.Input (handleKey)
+import Game.Logic.Command (parseCommand)
 import Game.Logic.Dungeon (defaultLevelConfig)
 import Game.Render (drawGame, fogAttr)
 import Game.Types (GameAction(..))
@@ -28,7 +29,44 @@ mkApp mAudio = App
   }
 
 handleEvent :: Maybe Audio.AudioSystem -> BrickEvent () e -> EventM () GameState ()
-handleEvent mAudio (VtyEvent (V.EvKey key mods)) =
+handleEvent mAudio (VtyEvent (V.EvKey key mods)) = do
+  gs <- get
+  case gsPrompt gs of
+    Just buf -> handlePromptKey key buf
+    Nothing  -> handleNormalKey mAudio key mods
+handleEvent _ _ = pure ()
+
+-- | Keystrokes while the slash-command prompt is open. The prompt
+--   swallows all input: 'Esc' cancels, 'Enter' submits and dispatches,
+--   'Backspace' edits, printable characters append. Nothing else
+--   advances the game.
+handlePromptKey :: V.Key -> String -> EventM () GameState ()
+handlePromptKey key buf = case key of
+  V.KEsc ->
+    modify (\gs -> gs { gsPrompt = Nothing })
+  V.KEnter -> do
+    modify (\gs -> gs { gsPrompt = Nothing })
+    case parseCommand buf of
+      Right cmd ->
+        modify (applyCommand cmd)
+      Left err ->
+        modify (\gs -> gs { gsMessages = ("Error: " ++ err) : gsMessages gs })
+  V.KBS ->
+    modify (\gs -> gs { gsPrompt = Just (dropLast buf) })
+  V.KChar c ->
+    modify (\gs -> gs { gsPrompt = Just (buf ++ [c]) })
+  _ ->
+    pure ()
+  where
+    dropLast [] = []
+    dropLast xs = init xs
+
+-- | Keystrokes while the prompt is closed. @/@ opens the prompt;
+--   everything else goes through the normal action keymap.
+handleNormalKey :: Maybe Audio.AudioSystem -> V.Key -> [V.Modifier] -> EventM () GameState ()
+handleNormalKey _ (V.KChar '/') _ =
+  modify (\gs -> gs { gsPrompt = Just "" })
+handleNormalKey mAudio key mods =
   case handleKey key mods of
     Just Quit -> halt
     Just act  -> do
@@ -39,7 +77,6 @@ handleEvent mAudio (VtyEvent (V.EvKey key mods)) =
           gs <- get
           liftIO $ mapM_ (Audio.playEvent audio) (gsEvents gs)
     Nothing   -> pure ()
-handleEvent _ _ = pure ()
 
 main :: IO ()
 main = do

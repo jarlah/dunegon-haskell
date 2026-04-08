@@ -22,15 +22,25 @@ drawGame :: GameState -> [Widget ()]
 drawGame gs =
   [ vBox
       [ drawGrid gs
-      -- Park the terminal cursor on this blank spacer line. Some
-      -- terminals don't honor Vty's hide-cursor escape reliably, so
-      -- we explicitly pin it to a stable, visually quiet spot.
-      , showCursor () (Location (0, 0)) $ str " "
+      , drawPromptLine gs
       , drawStatus gs
       , drawMessages gs
-      , str "Move: arrows / hjkl / yubn   Wait: .   Quit: q / Esc"
+      , str "Move: arrows / hjkl / yubn   Wait: .   Cmd: /   Quit: q / Esc"
       ]
   ]
+
+-- | The line between the map and the status bar. When the
+--   slash-command prompt is closed it's a blank spacer that holds
+--   the terminal cursor (some terminals ignore hide-cursor
+--   escapes, so we keep it visually quiet). When the prompt is
+--   open it shows @> buf@ with the cursor parked after the buffer.
+drawPromptLine :: GameState -> Widget ()
+drawPromptLine gs = case gsPrompt gs of
+  Nothing  ->
+    showCursor () (Location (0, 0)) $ str " "
+  Just buf ->
+    let line = "> " ++ buf
+    in showCursor () (Location (length line, 0)) $ str line
 
 -- | Render the dungeon one row at a time. Each cell is classified
 --   into one of three states: visible (normal), explored-but-not-

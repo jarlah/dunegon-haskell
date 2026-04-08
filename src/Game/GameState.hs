@@ -6,6 +6,7 @@ module Game.GameState
   , hardcodedRoom
   , hardcodedInitialState
   , applyAction
+  , applyCommand
   , fovRadius
   ) where
 
@@ -18,6 +19,7 @@ import System.Random (StdGen, mkStdGen, randomR)
 import Game.Types
 import qualified Game.Logic.Combat as C
 import Game.Logic.Combat (Damage(..))
+import Game.Logic.Command (Command(..))
 import qualified Game.Logic.Dungeon as D
 import qualified Game.Logic.FOV as FOV
 import Game.Logic.MonsterAI (MonsterIntent(..), monsterIntent)
@@ -44,6 +46,11 @@ data GameState = GameState
     -- ^ tiles the player has ever seen. Monotonically grows as the
     --   player explores; used to render a dim "fog of war" for
     --   tiles that are known but not currently visible.
+  , gsPrompt      :: !(Maybe String)
+    -- ^ slash-command prompt buffer. 'Nothing' means the prompt is
+    --   closed and keystrokes drive the normal keymap; 'Just buf'
+    --   means the prompt is open and keystrokes append to @buf@
+    --   until 'Enter' submits or 'Esc' cancels.
   } deriving (Show)
 
 -- | How far the player can see, in tiles. Measured in Euclidean
@@ -76,6 +83,7 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsEvents      = []
   , gsVisible     = Set.empty
   , gsExplored    = Set.empty
+  , gsPrompt      = Nothing
   }
 
 -- | Refresh 'gsVisible' from the player's current position and fold
@@ -152,6 +160,22 @@ hardcodedInitialState = mkGameState (mkStdGen 0) hardcodedRoom (V2 5 5) []
 ------------------------------------------------------------
 -- Action processing
 ------------------------------------------------------------
+
+-- | Apply a parsed slash-command. Commands are wizard / debug
+--   helpers right now — they do not cost a turn, do not emit game
+--   events, and do not advance monsters. Adding a gameplay command
+--   later (e.g. @/pray@) would route through 'applyAction' instead.
+applyCommand :: Command -> GameState -> GameState
+applyCommand CmdReveal gs =
+  let dl  = gsLevel gs
+      all_ = Set.fromList
+        [ V2 x y
+        | x <- [0 .. dlWidth  dl - 1]
+        , y <- [0 .. dlHeight dl - 1]
+        ]
+  in gs { gsExplored = Set.union (gsExplored gs) all_
+        , gsMessages = "Wizard: map revealed." : gsMessages gs
+        }
 
 applyAction :: GameAction -> GameState -> GameState
 applyAction act gs0 =
