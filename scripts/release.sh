@@ -119,6 +119,13 @@ docker build -f "$DOCKERFILE" -t "$IMAGE" scripts/
 #   * Build output is copied to a predictable path under the mount
 #     (./.release-bin/$PROJECT) so the host can pick it up without
 #     having to parse `stack path` output.
+#
+#   * --allow-different-user is required because the container runs
+#     as root but the bind-mounted /workspace is owned by the host
+#     user. Without it stack refuses to touch the tree as a
+#     precaution. This is safe here: the workspace belongs to the
+#     user who invoked the script, and we explicitly asked to build
+#     inside the container.
 #--------------------------------------------------------------
 
 # Clean any leftover bin from a previous aborted run so we don't
@@ -133,7 +140,7 @@ docker run --rm \
   -v "$STACK_CACHE_VOLUME:/root/.stack" \
   -w /workspace \
   "$IMAGE" \
-  stack --work-dir "$STACK_WORK_DOCKER" --system-ghc --no-nix test --fast
+  stack --work-dir "$STACK_WORK_DOCKER" --system-ghc --no-nix --allow-different-user test --fast
 
 echo "==> building release binary inside container"
 docker run --rm \
@@ -143,8 +150,8 @@ docker run --rm \
   "$IMAGE" \
   bash -c "
     set -euo pipefail
-    stack --work-dir $STACK_WORK_DOCKER --system-ghc --no-nix build
-    bin=\"\$(stack --work-dir $STACK_WORK_DOCKER --system-ghc --no-nix path --local-install-root)/bin/$PROJECT\"
+    stack --work-dir $STACK_WORK_DOCKER --system-ghc --no-nix --allow-different-user build
+    bin=\"\$(stack --work-dir $STACK_WORK_DOCKER --system-ghc --no-nix --allow-different-user path --local-install-root)/bin/$PROJECT\"
     cp \"\$bin\" /workspace/.release-bin/$PROJECT
   "
 
