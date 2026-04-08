@@ -3,7 +3,21 @@
 # For more information, please see the documentation at:
 #   https://docs.haskellstack.org/en/stable/topics/lock_files
 
-packages: []
+packages:
+- completed:
+    hackage: proteaaudio-0.10.1@sha256:1de76a1fc5ff15773c41f85689965455e8be770c8a88542e8ac1159c81b77868,2952
+    pantry-tree:
+      sha256: fef527961487a63e3ed0f14b01807d91d1a3de0c965efe9335ed80d702693494
+      size: 1992
+  original:
+    hackage: proteaaudio-0.10.1
+- completed:
+    hackage: proteaaudio-sdl-0.10.1@sha256:4f15bd7014381684908ea174283267a5df8368cae28e9e4af65e47bc600e54f8,2158
+    pantry-tree:
+      sha256: fd0b3e4af5feae046826113d85ec218d4c4c12e87d4bbf4da5460b7c8a4f9ae8
+      size: 942
+  original:
+    hackage: proteaaudio-sdl-0.10.1
 snapshots:
 - completed:
     sha256: a6882445afe04fd38791656e3667b491d92b9c27bcf18cda7e01c73016e828ee

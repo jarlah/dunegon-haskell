@@ -40,6 +40,7 @@ library
     Game.Logic.Progression
     Game.Render
     Game.Input
+    Game.Audio
   build-depends:
     , linear
     , vector
@@ -48,6 +49,7 @@ library
     , brick
     , vty
     , vty-crossplatform
+    , proteaaudio-sdl
 
 executable dungeon-haskell
   import:              shared
@@ -72,6 +74,7 @@ test-suite dungeon-haskell-test
     Game.Logic.DungeonSpec
     Game.Logic.CombatSpec
     Game.Logic.ProgressionSpec
+    Game.GameStateSpec
   build-depends:
     , dungeon-haskell
     , hspec

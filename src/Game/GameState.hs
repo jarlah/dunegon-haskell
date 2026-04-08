@@ -30,6 +30,9 @@ data GameState = GameState
   , gsRng         :: !StdGen
   , gsDead        :: !Bool       -- ^ did the player die?
   , gsQuitting    :: !Bool
+  , gsEvents      :: ![GameEvent]
+    -- ^ events emitted during the most recent 'applyAction' call,
+    --   in chronological order. Cleared at the start of each action.
   } deriving (Show)
 
 defaultPlayerStats :: Stats
@@ -54,6 +57,7 @@ mkGameState gen dl start monsters = GameState
   , gsRng         = gen
   , gsDead        = False
   , gsQuitting    = False
+  , gsEvents      = []
   }
 
 -- | Create a fresh game: generate a level, spawn monsters, build state.
@@ -122,17 +126,42 @@ hardcodedInitialState = mkGameState (mkStdGen 0) hardcodedRoom (V2 5 5) []
 ------------------------------------------------------------
 
 applyAction :: GameAction -> GameState -> GameState
-applyAction Quit       gs = gs { gsQuitting = True }
-applyAction _          gs | gsDead gs = gs
-applyAction Wait       gs = processMonsters gs
-applyAction (Move dir) gs =
-  let target = gsPlayerPos gs + dirToOffset dir
-  in case monsterAt target (gsMonsters gs) of
-       Just (i, m) -> processMonsters (playerAttack gs i m)
-       Nothing     ->
-         case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
-           Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
-           Nothing     -> gs  -- blocked; turn does not advance
+applyAction act gs0 =
+  -- Each action starts with a fresh event log so consumers (audio)
+  -- only see what happened on *this* turn.
+  let gs = gs0 { gsEvents = [] }
+  in case act of
+       Quit                -> gs { gsQuitting = True }
+       _ | gsDead gs       -> gs
+       Wait                -> processMonsters gs
+       Move dir            ->
+         let target = gsPlayerPos gs + dirToOffset dir
+         in case monsterAt target (gsMonsters gs) of
+              Just (i, m) -> processMonsters (playerAttack gs i m)
+              Nothing     ->
+                case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
+                  Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
+                  Nothing     -> gs  -- blocked; turn does not advance
+
+-- | Append events to the running per-turn log.
+emit :: GameState -> [GameEvent] -> GameState
+emit gs evs = gs { gsEvents = gsEvents gs ++ evs }
+
+-- | Map a combat result to the event the *attacker* cares about
+--   when the attacker is the player.
+playerCombatEvent :: C.CombatResult -> GameEvent
+playerCombatEvent C.Miss            = EvAttackMiss
+playerCombatEvent (C.Hit _)         = EvAttackHit
+playerCombatEvent (C.CriticalHit _) = EvAttackCrit
+playerCombatEvent (C.Kill _)        = EvMonsterKilled
+
+-- | Map a combat result to the event for the player being hit.
+--   'Nothing' means "no sound for this" (we skip monster whiffs).
+monsterCombatEvent :: C.CombatResult -> Maybe GameEvent
+monsterCombatEvent C.Miss            = Nothing
+monsterCombatEvent (C.Hit _)         = Just EvPlayerHurt
+monsterCombatEvent (C.CriticalHit _) = Just EvPlayerHurt
+monsterCombatEvent (C.Kill _)        = Just EvPlayerDied
 
 monsterAt :: Pos -> [Monster] -> Maybe (Int, Monster)
 monsterAt p = go 0
@@ -148,29 +177,33 @@ playerAttack gs i m =
       newMStats      = C.applyDamage (mStats m) (Damage (C.resultDamage result))
       msg            = C.describeAttack result (monsterName (mKind m))
       killed         = C.isDead newMStats
-      (playerStats', levelMsgs) =
+      combatEv       = playerCombatEvent result
+      (playerStats', levelMsgs, levelEvs) =
         if killed
           then
             let reward     = P.xpReward (mKind m)
-                (s', _)    = P.gainXP (gsPlayerStats gs) reward
+                (s', ups)  = P.gainXP (gsPlayerStats gs) reward
                 startLevel = sLevel (gsPlayerStats gs)
                 endLevel   = sLevel s'
-                -- newest first, so higher levels come first
+                -- Messages: newest first, so higher levels come first.
                 msgs = [ "You reach level " ++ show l ++ "!"
                        | l <- [endLevel, endLevel - 1 .. startLevel + 1]
                        ]
-            in (s', msgs)
-          else (gsPlayerStats gs, [])
+                evs  = replicate ups EvLevelUp
+            in (s', msgs, evs)
+          else (gsPlayerStats gs, [], [])
       monsters' =
         if killed
           then removeAt i (gsMonsters gs)
           else updateAt i (\mo -> mo { mStats = newMStats }) (gsMonsters gs)
-  in gs
-       { gsMonsters    = monsters'
-       , gsPlayerStats = playerStats'
-       , gsRng         = gen'
-       , gsMessages    = levelMsgs ++ [msg] ++ gsMessages gs
-       }
+  in emit
+       gs
+         { gsMonsters    = monsters'
+         , gsPlayerStats = playerStats'
+         , gsRng         = gen'
+         , gsMessages    = levelMsgs ++ [msg] ++ gsMessages gs
+         }
+       (combatEv : levelEvs)
 
 ------------------------------------------------------------
 -- Monster turns
@@ -207,12 +240,17 @@ monsterAttack gs m =
       msg             = C.describeAttacked result (monsterName (mKind m))
       died            = C.isDead newPlayerStats
       newMsgs         = if died then ["You die...", msg] else [msg]
-  in gs
-       { gsPlayerStats = newPlayerStats
-       , gsRng         = gen'
-       , gsMessages    = newMsgs ++ gsMessages gs
-       , gsDead        = died
-       }
+      evs             = case monsterCombatEvent result of
+        Just e  -> [e]
+        Nothing -> []
+  in emit
+       gs
+         { gsPlayerStats = newPlayerStats
+         , gsRng         = gen'
+         , gsMessages    = newMsgs ++ gsMessages gs
+         , gsDead        = died
+         }
+       evs
 
 ------------------------------------------------------------
 -- List helpers

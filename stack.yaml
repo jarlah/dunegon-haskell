@@ -20,6 +20,32 @@
 snapshot:
   url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/24/36.yaml
 
+# Nix integration. Stack auto-detects NixOS and uses a minimal default
+# package list (haskell.compiler.ghc9103 + git + gcc + gmp). We override
+# that here to also bring in SDL2 and pkg-config so proteaaudio-sdl can
+# find libSDL2 at build time. Keep the defaults alongside our additions.
+nix:
+  enable: true
+  packages:
+    - haskell.compiler.ghc9103
+    - git
+    - gcc
+    - gmp
+    - SDL2
+    - pkg-config
+
+# Extra dependencies not in the LTS snapshot.
+extra-deps:
+  - proteaaudio-0.10.1
+  - proteaaudio-sdl-0.10.1
+
+# proteaaudio / proteaaudio-sdl 0.10.1 caps bytestring at <0.12, but
+# LTS 24 ships bytestring 0.12.2.0. Bump just those two packages.
+allow-newer: true
+allow-newer-deps:
+  - proteaaudio
+  - proteaaudio-sdl
+
 # User packages to be built.
 # Various formats can be used as shown in the example below.
 #

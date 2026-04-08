@@ -14,6 +14,7 @@ module Game.Types
   , monsterGlyph
   , monsterName
   , Monster(..)
+  , GameEvent(..)
   ) where
 
 import Data.Vector (Vector, (!))
@@ -122,3 +123,19 @@ data Monster = Monster
   , mPos   :: !Pos
   , mStats :: !Stats
   } deriving (Eq, Show)
+
+-- | Semantic events produced by turn resolution. The pure logic layer
+--   emits these as a side-product of applying an action; the IO shell
+--   (audio, eventually particle effects, telemetry, ...) consumes them.
+--
+--   Keep the set small and meaningful — one event per "thing a player
+--   would want feedback for".
+data GameEvent
+  = EvAttackMiss     -- ^ player swung and missed
+  | EvAttackHit      -- ^ player landed a normal hit
+  | EvAttackCrit     -- ^ player landed a critical hit
+  | EvMonsterKilled  -- ^ player killed a monster
+  | EvPlayerHurt     -- ^ a monster hit the player
+  | EvPlayerDied     -- ^ a monster dealt the killing blow
+  | EvLevelUp        -- ^ player gained an experience level
+  deriving (Eq, Show)
