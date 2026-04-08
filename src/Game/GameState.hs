@@ -224,17 +224,143 @@ hardcodedInitialState = mkGameState (mkStdGen 0) hardcodedRoom (V2 5 5) []
 --   helpers right now — they do not cost a turn, do not emit game
 --   events, and do not advance monsters. Adding a gameplay command
 --   later (e.g. @/pray@) would route through 'applyAction' instead.
+--
+--   Each command wraps its effect in 'recomputeVisibility' at the
+--   end so anything that moves the player or reshapes the level
+--   leaves 'gsVisible' / 'gsExplored' consistent.
 applyCommand :: Command -> GameState -> GameState
-applyCommand CmdReveal gs =
-  let dl  = gsLevel gs
+applyCommand cmd gs = recomputeVisibility $ case cmd of
+  CmdReveal       -> wizCmdReveal gs
+  CmdHeal         -> wizCmdHeal gs
+  CmdKillAll      -> wizCmdKillAll gs
+  CmdTeleport p   -> wizCmdTeleport p gs
+  CmdSpawn k      -> wizCmdSpawn k gs
+  CmdXP n         -> wizCmdXP n gs
+  CmdDescend      -> wizCmdDescend gs
+  CmdAscend       -> wizCmdAscend gs
+
+-- | Prepend a wizard-flavored log line.
+wizMsg :: String -> GameState -> GameState
+wizMsg m gs = gs { gsMessages = ("Wizard: " ++ m) : gsMessages gs }
+
+wizCmdReveal :: GameState -> GameState
+wizCmdReveal gs =
+  let dl   = gsLevel gs
       all_ = Set.fromList
         [ V2 x y
         | x <- [0 .. dlWidth  dl - 1]
         , y <- [0 .. dlHeight dl - 1]
         ]
-  in gs { gsExplored = Set.union (gsExplored gs) all_
-        , gsMessages = "Wizard: map revealed." : gsMessages gs
-        }
+  in wizMsg "map revealed." gs { gsExplored = Set.union (gsExplored gs) all_ }
+
+wizCmdHeal :: GameState -> GameState
+wizCmdHeal gs =
+  let s  = gsPlayerStats gs
+      s' = s { sHP = sMaxHP s }
+  in wizMsg "fully healed." gs { gsPlayerStats = s' }
+
+wizCmdKillAll :: GameState -> GameState
+wizCmdKillAll gs =
+  let n = length (gsMonsters gs)
+  in wizMsg (show n ++ " monster(s) banished.") gs { gsMonsters = [] }
+
+-- | Teleport if the target tile is walkable *and* in-bounds.
+--   Refuses silently-with-message otherwise so the wizard doesn't
+--   phase into a wall or off the edge of the map.
+wizCmdTeleport :: Pos -> GameState -> GameState
+wizCmdTeleport p gs =
+  case tileAt (gsLevel gs) p of
+    Just t | isWalkable t ->
+      wizMsg ("teleported to " ++ showPos p ++ ".") gs { gsPlayerPos = p }
+    Just _ ->
+      wizMsg ("tile at " ++ showPos p ++ " is blocked.") gs
+    Nothing ->
+      wizMsg (showPos p ++ " is outside the map.") gs
+  where
+    showPos (V2 x y) = "(" ++ show x ++ "," ++ show y ++ ")"
+
+-- | Spawn a monster on the first walkable tile adjacent to the
+--   player that isn't already occupied. If the player is somehow
+--   boxed in, bail out with a message rather than overwriting
+--   something.
+wizCmdSpawn :: MonsterKind -> GameState -> GameState
+wizCmdSpawn kind gs =
+  let neighbors =
+        [ gsPlayerPos gs + dirToOffset d | d <- [minBound .. maxBound] ]
+      occupied = Set.fromList (map mPos (gsMonsters gs))
+      free =
+        [ p
+        | p <- neighbors
+        , case tileAt (gsLevel gs) p of
+            Just t  -> isWalkable t
+            Nothing -> False
+        , not (Set.member p occupied)
+        ]
+  in case free of
+       []      -> wizMsg "no room to spawn next to you." gs
+       (p : _) ->
+         let m = Monster
+               { mKind  = kind
+               , mPos   = p
+               , mStats = monsterStats kind
+               }
+         in wizMsg ("spawned a " ++ monsterName kind ++ ".") gs
+              { gsMonsters = gsMonsters gs ++ [m] }
+
+-- | Grant XP and surface the same level-up messages a kill would.
+wizCmdXP :: Int -> GameState -> GameState
+wizCmdXP n gs
+  | n < 0 = wizMsg "XP must be non-negative." gs
+  | otherwise =
+      let (s', ups) = P.gainXP (gsPlayerStats gs) n
+          startLvl  = sLevel (gsPlayerStats gs)
+          endLvl    = sLevel s'
+          lvlMsgs   =
+            [ "You reach level " ++ show l ++ "!"
+            | l <- [endLvl, endLvl - 1 .. startLvl + 1]
+            ]
+      in wizMsg ("granted " ++ show n ++ " XP.") gs
+           { gsPlayerStats = s'
+           , gsMessages    = lvlMsgs ++ gsMessages gs
+           , gsEvents      = gsEvents gs ++ replicate ups EvLevelUp
+           }
+
+-- | Force-descend. Unlike 'playerDescend' this does not require
+--   standing on a 'StairsDown' tile — it's meant for poking at
+--   deeper floors during development.
+wizCmdDescend :: GameState -> GameState
+wizCmdDescend gs =
+  let currentDepth = dlDepth (gsLevel gs)
+      nextDepth    = currentDepth + 1
+      parked       = parkCurrent gs
+      gsParked     = gs { gsLevels = Map.insert currentDepth parked (gsLevels gs) }
+      gs' = case Map.lookup nextDepth (gsLevels gsParked) of
+        Just pl ->
+          loadParked pl
+            gsParked { gsLevels = Map.delete nextDepth (gsLevels gsParked) }
+        Nothing ->
+          generateAndEnter nextDepth gsParked
+      gs'' = wizMsg ("descended to depth " ++ show nextDepth ++ ".") gs'
+  in fireQuestEvent (EvEnteredDepth nextDepth) gs''
+
+-- | Force-ascend. Refuses at depth 1 with a message, otherwise
+--   behaves like 'playerAscend' minus the stairs-tile check.
+wizCmdAscend :: GameState -> GameState
+wizCmdAscend gs =
+  let currentDepth = dlDepth (gsLevel gs)
+      prevDepth    = currentDepth - 1
+  in if prevDepth < 1
+       then wizMsg "already at the top floor." gs
+       else
+         let parked   = parkCurrent gs
+             gsParked = gs { gsLevels = Map.insert currentDepth parked (gsLevels gs) }
+         in case Map.lookup prevDepth (gsLevels gsParked) of
+              Just pl ->
+                let gs' = loadParked pl
+                      gsParked { gsLevels = Map.delete prevDepth (gsLevels gsParked) }
+                in wizMsg ("ascended to depth " ++ show prevDepth ++ ".") gs'
+              Nothing ->
+                wizMsg "no parked level to return to." gs
 
 applyAction :: GameAction -> GameState -> GameState
 applyAction act gs0 =
