@@ -2,6 +2,7 @@ module Game.Render
   ( drawGame
   , fogAttr
   , npcAttr
+  , bossAttr
   ) where
 
 import Brick
@@ -30,6 +31,13 @@ fogAttr = attrName "fog"
 npcAttr :: AttrName
 npcAttr = attrName "npc"
 
+-- | Attribute name used for boss monsters (currently the dragon).
+--   Main wires this to a red foreground so a boss's 2x2 footprint
+--   reads as a single distinctive mass instead of a grid of
+--   normal monster glyphs.
+bossAttr :: AttrName
+bossAttr = attrName "boss"
+
 drawGame :: GameState -> [Widget ()]
 drawGame gs =
   let baseLayer = vBox
@@ -44,6 +52,7 @@ drawGame gs =
        Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
          [drawDialogueModal (gsQuests gs) i npc, baseLayer]
        _
+         | gsVictory      gs  -> [drawVictoryModal, baseLayer]
          | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
          | gsHelpOpen     gs  -> [drawHelpModal, baseLayer]
          | gsQuestLogOpen gs  -> [drawQuestLogModal gs, baseLayer]
@@ -92,12 +101,15 @@ drawCell gs vis exp_ pos
 
 -- | Render the cell at a visible position, with its glyph and (if
 --   applicable) attribute. Priority from top to bottom: player,
---   monster, NPC, item on floor, terrain.
+--   monster, NPC, item on floor, terrain. Multi-tile bosses paint
+--   their glyph on every tile of their footprint — so a 2x2
+--   dragon shows up as a 2x2 block of @D@.
 visibleCell :: GameState -> Pos -> Widget ()
 visibleCell gs pos
   | pos == gsPlayerPos gs = str "@"
-  | Just m <- find (\mo -> mPos mo == pos) (gsMonsters gs) =
-      str [monsterGlyph (mKind m)]
+  | Just m <- find (`monsterOccupies` pos) (gsMonsters gs) =
+      let attr = if isBoss (mKind m) then bossAttr else mempty
+      in withAttr attr $ str [monsterGlyph (mKind m)]
   | Just _ <- find (\n -> npcPos n == pos) (gsNPCs gs) =
       withAttr npcAttr $ str "N"
   | Just (_, it) <- find (\(p, _) -> p == pos) (gsItemsOnFloor gs) =
@@ -280,6 +292,23 @@ drawQuitConfirmModal =
         , str ""
         , str "  y : yes, quit"
         , str "  n / Esc : keep playing"
+        ]
+
+-- | Shown when the player lands the killing blow on the dragon.
+--   Freezes the game (gameplay input is ignored while gsVictory is
+--   true) so the only thing the player can do is quit. The framing
+--   matches the quit-confirmation modal so the key hint lines up.
+drawVictoryModal :: Widget ()
+drawVictoryModal =
+  centerLayer
+    $ borderWithLabel (str " Victory! ")
+    $ padAll 1
+    $ vBox
+        [ str "The dragon is slain and the dungeon falls silent."
+        , str ""
+        , str "You have won the run."
+        , str ""
+        , str "  q / Esc : exit to the prompt"
         ]
 
 -- | A reference sheet for every key binding, modal, and slash

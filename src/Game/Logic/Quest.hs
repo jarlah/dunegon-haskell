@@ -36,6 +36,9 @@ data QuestGoal
     -- ^ kill at least N monsters (any kind)
   | GoalReachDepth !Int
     -- ^ reach at least depth D on the dungeon level stack
+  | GoalKillBoss
+    -- ^ slay the run's boss. Progress is boolean — zero until the
+    --   boss dies, then one — so the target is implicitly 1.
   deriving (Eq, Show)
 
 -- | Quest lifecycle. 'QuestActive' and 'QuestNotStarted' are
@@ -62,6 +65,7 @@ data QuestStatus
 --   whether any given event is relevant.
 data QuestEvent
   = EvKilledMonster
+  | EvKilledBoss
   | EvEnteredDepth !Int
   deriving (Eq, Show)
 
@@ -138,6 +142,8 @@ advanceQuest ev q = case (qGoal q, ev) of
     let progress' = max (qProgress q) d
         status'   = if progress' >= target then QuestReadyToTurnIn else QuestActive
     in q { qProgress = progress', qStatus = status' }
+  (GoalKillBoss, EvKilledBoss) ->
+    q { qProgress = 1, qStatus = QuestReadyToTurnIn }
   _ -> q
 
 -- | Advance every quest in a list by the same event. Convenient
@@ -151,6 +157,7 @@ questDescription :: Quest -> String
 questDescription q = case qGoal q of
   GoalKillMonsters target -> "Kill " ++ show target ++ " monsters."
   GoalReachDepth   target -> "Reach depth " ++ show target ++ "."
+  GoalKillBoss            -> "Slay the dragon that rules the deep."
 
 -- | Short progress label for the status panel, e.g. @"3/5"@,
 --   @"ready!"@ for quests waiting to be turned in, or @"done"@ for
@@ -163,3 +170,4 @@ questProgressLabel q
   | otherwise = case qGoal q of
       GoalKillMonsters target -> show (min (qProgress q) target) ++ "/" ++ show target
       GoalReachDepth   target -> show (min (qProgress q) target) ++ "/" ++ show target
+      GoalKillBoss            -> show (min (qProgress q) 1) ++ "/1"

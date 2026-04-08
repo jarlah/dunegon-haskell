@@ -12,11 +12,13 @@ instance Arbitrary QuestGoal where
   arbitrary = oneof
     [ GoalKillMonsters <$> choose (1, 10)
     , GoalReachDepth   <$> choose (1, 10)
+    , pure GoalKillBoss
     ]
 
 instance Arbitrary QuestEvent where
   arbitrary = oneof
     [ pure EvKilledMonster
+    , pure EvKilledBoss
     , EvEnteredDepth <$> choose (1, 12)
     ]
 
@@ -75,6 +77,22 @@ spec = describe "Game.Logic.Quest" $ do
           q1 = advanceQuest (EvEnteredDepth 7) q0
       isReady   q1 `shouldBe` True
       qProgress q1 `shouldBe` 7
+
+    it "flips a boss-kill quest to ready on EvKilledBoss" $ do
+      let q0 = fresh GoalKillBoss
+          q1 = advanceQuest EvKilledBoss q0
+      qProgress q1 `shouldBe` 1
+      isReady   q1 `shouldBe` True
+
+    it "a boss-kill quest ignores regular monster kills" $ do
+      let q0 = fresh GoalKillBoss
+          q1 = advanceQuest EvKilledMonster q0
+      q1 `shouldBe` q0
+
+    it "a boss-kill quest ignores depth events" $ do
+      let q0 = fresh GoalKillBoss
+          q1 = advanceQuest (EvEnteredDepth 9) q0
+      q1 `shouldBe` q0
 
   describe "advanceAll" $ do
     it "applies the same event to every quest in a list" $ do
@@ -155,3 +173,5 @@ forceReady q = case qGoal q of
     iterate (advanceQuest EvKilledMonster) q !! n
   GoalReachDepth   n ->
     advanceQuest (EvEnteredDepth n) q
+  GoalKillBoss ->
+    advanceQuest EvKilledBoss q

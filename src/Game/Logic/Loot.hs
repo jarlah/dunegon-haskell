@@ -22,6 +22,7 @@ dropChance :: MonsterKind -> Int
 dropChance Rat    = 20
 dropChance Goblin = 45
 dropChance Orc    = 75
+dropChance Dragon = 100   -- bosses always drop something on kill
 
 -- | The weighted candidate list for a given monster kind. Weights
 --   don't have to sum to anything specific; 'rollLoot' picks
@@ -47,6 +48,13 @@ lootTable Orc =
   , (2, IWeapon LongSword)
   , (2, IArmor  LeatherArmor)
   , (1, IArmor  ChainMail)
+  ]
+-- | Dragon hoard. A single major potion for now; the boss's real
+--   "reward" is the XP bounty from the Slay-the-Dragon quest.
+lootTable Dragon =
+  [ (1, IPotion HealingMajor)
+  , (1, IArmor  ChainMail)
+  , (1, IWeapon LongSword)
   ]
 
 -- | Roll loot for a freshly killed monster. Returns a (possibly

@@ -7,11 +7,14 @@ module Game.Logic.Progression
 
 import Game.Types (Stats(..), MonsterKind(..))
 
--- | XP awarded for killing a monster of the given kind.
+-- | XP awarded for killing a monster of the given kind. Bosses
+--   only pay a symbolic XP bounty — the real payoff for a boss
+--   kill comes from turning in the matching quest.
 xpReward :: MonsterKind -> Int
 xpReward Rat    = 5
 xpReward Goblin = 15
 xpReward Orc    = 40
+xpReward Dragon = 100
 
 -- | XP required to advance *from* the given level to the next one.
 --   A quadratic curve: 25, 100, 225, 400, 625, ...

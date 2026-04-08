@@ -12,6 +12,7 @@ import System.Random (mkStdGen)
 import Test.Hspec
 
 import Game.GameState
+import Game.Logic.Command (Command(..))
 import Game.Logic.Quest
   ( Quest(..), QuestGoal(..), QuestStatus(..), mkQuest )
 import Game.Types
@@ -54,6 +55,9 @@ mkFixture seed ppos pstats monsters = GameState
   , gsQuestLogCursor = Nothing
   , gsConfirmQuit    = False
   , gsHelpOpen       = False
+  , gsBossDepth      = 10
+  , gsBossRoom       = Nothing
+  , gsVictory        = False
   , gsLevels        = mempty
   }
 
@@ -68,11 +72,7 @@ overpoweredPlayer = Stats
 
 -- | A rat placed at (2, 1), one tile north of a player at (2, 2).
 ratAt :: Pos -> Monster
-ratAt p = Monster
-  { mKind  = Rat
-  , mPos   = p
-  , mStats = monsterStats Rat
-  }
+ratAt = mkMonster Rat
 
 spec :: Spec
 spec = describe "Game.GameState.applyAction / event emission" $ do
@@ -296,6 +296,63 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs' = turnInQuest 0 0 gs
     gsQuests gs' `shouldBe` gsQuests gs
     sXP (gsPlayerStats gs') `shouldBe` sXP (gsPlayerStats gs)
+
+  -- ----------------------------------------------------------------
+  -- M11: boss encounter
+  -- ----------------------------------------------------------------
+
+  it "attacking any tile of a dragon's 2x2 footprint hits the boss" $ do
+    -- Dragon occupies (1,1), (2,1), (1,2), (2,2). Player at (3,2)
+    -- moves W into (2,2), which is the dragon's bottom-right tile.
+    -- 'monsterAt' should resolve that to the dragon.
+    let dragon = mkMonster Dragon (V2 1 1)
+        gs0    = mkFixture 3 (V2 3 2) overpoweredPlayer [dragon]
+        gs1    = applyAction (Move W) gs0
+    -- overpoweredPlayer one-shots the dragon (attack 9999 vs HP 80).
+    length (gsMonsters gs1) `shouldBe` 0
+    EvBossKilled `elem` gsEvents gs1 `shouldBe` True
+    gsVictory gs1 `shouldBe` True
+
+  it "killing the dragon advances an accepted GoalKillBoss quest to ready" $ do
+    let offer  = (mkQuest "Slay the Dragon" GoalKillBoss)
+                   { qStatus = QuestNotStarted, qReward = 500 }
+        npc    = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        dragon = mkMonster Dragon (V2 1 1)
+        gs0    = (mkFixture 3 (V2 3 2) overpoweredPlayer [dragon])
+                   { gsNPCs = [npc] }
+        gs1    = acceptQuestFromNPC 0 0 gs0
+        gs2    = applyAction (Move W) gs1
+    length (gsQuests gs2) `shouldBe` 1
+    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
+
+  it "GoalKillBoss quest does NOT advance on a regular monster kill" $ do
+    let offer = (mkQuest "Slay the Dragon" GoalKillBoss)
+                  { qStatus = QuestNotStarted, qReward = 500 }
+        npc   = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        rat   = ratAt (V2 2 1)
+        gs0   = (mkFixture 3 (V2 2 2) overpoweredPlayer [rat])
+                  { gsNPCs = [npc] }
+        gs1   = acceptQuestFromNPC 0 0 gs0
+        gs2   = applyAction (Move N) gs1
+    -- Rat dies but the boss-kill quest is still active, not ready.
+    qStatus (head (gsQuests gs2)) `shouldBe` QuestActive
+
+  it "descending onto the boss depth generates a boss floor" $ do
+    -- Force the next-floor generation into boss mode by setting
+    -- gsBossDepth = 2 and using the wizard /descend to skip from
+    -- the fixture's depth-1 tinyRoom to a generated depth-2 floor.
+    let gs0 = (mkFixture 7 (V2 1 1) overpoweredPlayer [])
+                { gsBossDepth = 2 }
+        gs1 = applyCommand CmdDescend gs0
+    dlDepth (gsLevel gs1) `shouldBe` 2
+    -- Boss floor: no StairsDown anywhere in the tile grid.
+    StairsDown `notElem` V.toList (dlTiles (gsLevel gs1)) `shouldBe` True
+    -- And a dragon is in the monster list.
+    any ((== Dragon) . mKind) (gsMonsters gs1) `shouldBe` True
+    -- And gsBossRoom is populated so the music layer can react.
+    case gsBossRoom gs1 of
+      Just _  -> pure ()
+      Nothing -> expectationFailure "expected gsBossRoom to be set on a boss floor"
 
 -- | Build a test NPC with two starter offers, placed at the
 --   given position.

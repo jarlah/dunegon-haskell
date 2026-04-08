@@ -12,6 +12,7 @@ module Game.GameState
   , acceptQuestFromNPC
   , abandonQuest
   , turnInQuest
+  , shouldPlayBossMusic
   , fovRadius
   ) where
 
@@ -108,6 +109,25 @@ data GameState = GameState
     -- ^ is the help modal currently open? The help modal lists
     --   every keybinding and slash command so the player doesn't
     --   have to remember them or scroll back through the README.
+  , gsBossDepth   :: !Int
+    -- ^ the depth at which the boss encounter lives, rolled once
+    --   in 'newGame' from 'lcBossDepthRange' so every run has a
+    --   single fixed boss floor. 'generateAndEnter' uses this to
+    --   decide whether the next floor is the boss floor (strip
+    --   'StairsDown', spawn a dragon in the last room, set
+    --   'gsBossRoom'). Stored on the state so a return trip via
+    --   up-stairs / down-stairs doesn't re-roll it.
+  , gsBossRoom    :: !(Maybe D.Room)
+    -- ^ the room containing the boss on the *currently loaded*
+    --   level, or 'Nothing' on any non-boss floor. Set when
+    --   'generateAndEnter' generates the boss floor; cleared when
+    --   the player leaves it. Used by the music layer (M11f) to
+    --   decide when to swap to boss music.
+  , gsVictory     :: !Bool
+    -- ^ has the player slain the boss? Set when the dragon dies
+    --   and used by the render layer to show a victory modal and
+    --   by the input layer to freeze gameplay the same way death
+    --   does.
   , gsLevels      :: !(Map Int ParkedLevel)
     -- ^ previously-visited dungeon levels, keyed by their depth.
     --   The *current* level is always in 'gsLevel' and friends —
@@ -128,6 +148,10 @@ data ParkedLevel = ParkedLevel
   , plItems     :: ![(Pos, Item)]
   , plExplored  :: !(Set Pos)
   , plPlayerPos :: !Pos
+  , plBossRoom  :: !(Maybe D.Room)
+    -- ^ the boss room on this level if any. Non-boss floors carry
+    --   'Nothing'. Stashed so a round-trip via stairs preserves
+    --   which room on the boss floor is the dragon's lair.
   } deriving (Show)
 
 -- | A friendly non-combat entity sitting on the dungeon floor.
@@ -189,6 +213,9 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsQuestLogCursor = Nothing
   , gsConfirmQuit    = False
   , gsHelpOpen       = False
+  , gsBossDepth      = 10
+  , gsBossRoom       = Nothing
+  , gsVictory        = False
   , gsLevels      = Map.empty
   }
 
@@ -213,15 +240,20 @@ recomputeVisibility gs =
         , gsExplored = Set.union (gsExplored gs) vis
         }
 
--- | Create a fresh game: generate a level, spawn monsters, build state.
+-- | Create a fresh game: roll the boss depth, generate the starting
+--   level, spawn monsters and NPCs, build state. Depth 1 is never a
+--   boss floor (the range lives well below that) so 'newGame' uses
+--   the plain-floor path unconditionally.
 newGame :: StdGen -> D.LevelConfig -> GameState
 newGame gen0 cfg =
-  let (dl, startPos, rooms, gen1) = D.generateLevel gen0 cfg
+  let (bossDepth, gen1) = randomR (D.lcBossDepthRange cfg) gen0
+      (dl, startPos, rooms, gen2) = D.generateLevel gen1 cfg
       -- Don't spawn monsters in the player's starting room.
       spawnRooms       = drop 1 rooms
-      (monsters, gen2) = spawnMonsters gen1 spawnRooms
-      (npcs,     gen3) = spawnNPCs gen2 (D.lcDepth cfg) rooms
-  in (mkGameState gen3 dl startPos monsters) { gsNPCs = npcs }
+      (monsters, gen3) = spawnMonsters gen2 spawnRooms
+      (npcs,     gen4) = spawnNPCs gen3 (D.lcDepth cfg) rooms
+      base             = mkGameState gen4 dl startPos monsters
+  in base { gsNPCs = npcs, gsBossDepth = bossDepth }
 
 -- | Place NPCs for a freshly generated level. For the M10.1 MVP
 --   this only fires on depth 1 and drops a single "Quest Master"
@@ -238,8 +270,9 @@ spawnNPCs gen depth rooms
               , npcPos      = p
               , npcGreeting = "Greetings, traveler. I have work for those willing."
               , npcOffers   =
-                  [ (mkOffer "Slayer" (GoalKillMonsters 5)) { qReward = 50 }
-                  , (mkOffer "Delve"  (GoalReachDepth 3))   { qReward = 75 }
+                  [ (mkOffer "Slayer"        (GoalKillMonsters 5)) { qReward = 50 }
+                  , (mkOffer "Delve"         (GoalReachDepth 3))   { qReward = 75 }
+                  , (mkOffer "Slay the Dragon" GoalKillBoss)       { qReward = 500 }
                   ]
               }
         in ([questMaster], gen')
@@ -259,10 +292,13 @@ spawnInRoom gen0 r n
   | otherwise =
       let (kind, g1) = randomMonsterKind gen0
           (p,    g2) = randomRoomPos r g1
-          m = Monster kind p (monsterStats kind)
+          m          = mkMonster kind p
           (rest, g3) = spawnInRoom g2 r (n - 1)
       in (m : rest, g3)
 
+-- | Pick a random non-boss monster kind with uniform weight.
+--   Bosses are placed by 'spawnBoss', not by the regular random
+--   roll, so this explicitly enumerates the small monsters.
 randomMonsterKind :: StdGen -> (MonsterKind, StdGen)
 randomMonsterKind gen0 =
   let (i, gen1) = randomR (0 :: Int, 2) gen0
@@ -379,13 +415,8 @@ wizCmdSpawn kind gs =
   in case free of
        []      -> wizMsg "no room to spawn next to you." gs
        (p : _) ->
-         let m = Monster
-               { mKind  = kind
-               , mPos   = p
-               , mStats = monsterStats kind
-               }
-         in wizMsg ("spawned a " ++ monsterName kind ++ ".") gs
-              { gsMonsters = gsMonsters gs ++ [m] }
+         wizMsg ("spawned a " ++ monsterName kind ++ ".") gs
+           { gsMonsters = gsMonsters gs ++ [mkMonster kind p] }
 
 -- | Grant XP and surface the same level-up messages a kill would.
 wizCmdXP :: Int -> GameState -> GameState
@@ -450,6 +481,7 @@ applyAction act gs0 =
   in recomputeVisibility $ case act of
        Quit                -> gs { gsQuitting = True }
        _ | gsDead gs       -> gs
+       _ | gsVictory gs    -> gs
        Wait                -> processMonsters gs
        Pickup              -> processMonsters (playerPickup gs)
        UseItem idx         -> processMonsters (playerUseItem idx gs)
@@ -513,13 +545,17 @@ monsterCombatEvent (C.Hit _)         = Just EvPlayerHurt
 monsterCombatEvent (C.CriticalHit _) = Just EvPlayerHurt
 monsterCombatEvent (C.Kill _)        = Just EvPlayerDied
 
+-- | Find a monster occupying the given tile, if any. Uses
+--   'monsterOccupies' so that multi-tile bosses resolve on any
+--   tile of their footprint — attacks and collisions that hit any
+--   tile of a dragon all point back at the same 'Monster' entry.
 monsterAt :: Pos -> [Monster] -> Maybe (Int, Monster)
 monsterAt p = go 0
   where
     go _ [] = Nothing
     go i (m : rest)
-      | mPos m == p = Just (i, m)
-      | otherwise   = go (i + 1) rest
+      | monsterOccupies m p = Just (i, m)
+      | otherwise           = go (i + 1) rest
 
 -- | Index lookup mirroring 'monsterAt' but for NPCs.
 npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)
@@ -640,6 +676,7 @@ playerAttack gs i m =
       newMStats      = C.applyDamage (mStats m) (Damage (C.resultDamage result))
       msg            = C.describeAttack result (monsterName (mKind m))
       killed         = C.isDead newMStats
+      wasBoss        = isBoss (mKind m)
       combatEv       = playerCombatEvent result
       (playerStats', levelMsgs, levelEvs) =
         if killed
@@ -670,16 +707,32 @@ playerAttack gs i m =
         ]
       itemsOnFloor' =
         gsItemsOnFloor gs ++ [ (mPos m, it) | it <- loot ]
+      -- When the killing blow lands on a boss, append EvBossKilled
+      -- and a dedicated victory line, and flip gsVictory so the
+      -- render / input layers can show the victory modal and freeze
+      -- further input the same way death does.
+      bossEvs      = [ EvBossKilled | killed && wasBoss ]
+      bossMsgs     = [ "With a final roar, the " ++ monsterName (mKind m) ++ " falls. You are victorious!"
+                     | killed && wasBoss ]
+      victory'     = gsVictory gs || (killed && wasBoss)
       gs' = emit
         gs
           { gsMonsters     = monsters'
           , gsPlayerStats  = playerStats'
           , gsRng          = gen''
-          , gsMessages     = reverse lootMsgs ++ levelMsgs ++ [msg] ++ gsMessages gs
+          , gsMessages     = reverse lootMsgs ++ bossMsgs ++ levelMsgs ++ [msg] ++ gsMessages gs
           , gsItemsOnFloor = itemsOnFloor'
+          , gsVictory      = victory'
           }
-        (combatEv : levelEvs)
-  in if killed then fireQuestEvent EvKilledMonster gs' else gs'
+        (combatEv : levelEvs ++ bossEvs)
+      -- Fire the generic kill event for every fatal blow, and
+      -- additionally fire the boss-specific event so a
+      -- 'GoalKillBoss' quest flips to ready. Non-boss kills don't
+      -- generate 'EvKilledBoss', so a boss-slaying quest only
+      -- advances on the right kill.
+      questEvs = if wasBoss then [EvKilledMonster, EvKilledBoss] else [EvKilledMonster]
+      fireAll gss = foldl (flip fireQuestEvent) gss questEvs
+  in if killed then fireAll gs' else gs'
 
 ------------------------------------------------------------
 -- Items
@@ -760,6 +813,7 @@ parkCurrent gs = ParkedLevel
   , plItems     = gsItemsOnFloor gs
   , plExplored  = gsExplored gs
   , plPlayerPos = gsPlayerPos gs
+  , plBossRoom  = gsBossRoom gs
   }
 
 -- | Swap a 'ParkedLevel' in as the current level. The caller is
@@ -772,6 +826,7 @@ loadParked pl gs = gs
   , gsItemsOnFloor = plItems pl
   , gsExplored     = plExplored pl
   , gsPlayerPos    = plPlayerPos pl
+  , gsBossRoom     = plBossRoom pl
   }
 
 -- | Freshly generate the next floor and swap it in. The new level
@@ -779,20 +834,80 @@ loadParked pl gs = gs
 --   for its depth, which is set to the supplied value. The player
 --   lands on the new level's 'StairsUp' tile (that's where the
 --   generator places @startPos@).
+--
+--   If @depth@ matches the run's rolled 'gsBossDepth', the floor is
+--   post-processed into a boss floor: 'StairsDown' is stripped (the
+--   dragon is literally the end of the line), the last room is
+--   designated the boss room, the dragon is spawned at a random
+--   interior position with 2x2 footprint clearance, and regular
+--   monsters are spawned in every room *except* the boss room so
+--   the boss fight is clean.
 generateAndEnter :: Int -> GameState -> GameState
 generateAndEnter depth gs =
   let cfg            = D.defaultLevelConfig { D.lcDepth = depth }
-      (dl, start, rooms, g1) = D.generateLevel (gsRng gs) cfg
-      spawnRooms     = drop 1 rooms
-      (monsters, g2) = spawnMonsters g1 spawnRooms
-  in gs
-       { gsLevel        = dl
-       , gsMonsters     = monsters
-       , gsItemsOnFloor = []
-       , gsExplored     = Set.empty
-       , gsPlayerPos    = start
-       , gsRng          = g2
-       }
+      (dl0, start, rooms, g1) = D.generateLevel (gsRng gs) cfg
+      isBossFloor   = depth == gsBossDepth gs && not (null rooms)
+  in if isBossFloor
+       then
+         let bossRoom            = last rooms
+             -- Rooms that still get regular spawns: everything except
+             -- the starting room (index 0) and the boss room.
+             regularRooms        = drop 1 (init rooms)
+             (regulars, g2)      = spawnMonsters g1 regularRooms
+             (dragonPos, g3)     = pickBossTopLeft bossRoom g2
+             dragon              = mkMonster Dragon dragonPos
+             dl                  = D.stripStairsDown dl0
+         in gs
+              { gsLevel        = dl
+              , gsMonsters     = dragon : regulars
+              , gsItemsOnFloor = []
+              , gsExplored     = Set.empty
+              , gsPlayerPos    = start
+              , gsRng          = g3
+              , gsBossRoom     = Just bossRoom
+              }
+       else
+         let spawnRooms     = drop 1 rooms
+             (monsters, g2) = spawnMonsters g1 spawnRooms
+         in gs
+              { gsLevel        = dl0
+              , gsMonsters     = monsters
+              , gsItemsOnFloor = []
+              , gsExplored     = Set.empty
+              , gsPlayerPos    = start
+              , gsRng          = g2
+              , gsBossRoom     = Nothing
+              }
+
+-- | Should the boss music track be playing right now? True iff the
+--   player is currently standing on the boss floor /and/ has
+--   explored at least one tile of the boss room — i.e. they've
+--   laid eyes on the dragon's lair at some point. Stays true even
+--   if the player retreats out of line of sight (the music would
+--   otherwise flicker every few steps), and flips back to false
+--   when they climb away from the boss floor entirely.
+shouldPlayBossMusic :: GameState -> Bool
+shouldPlayBossMusic gs = case gsBossRoom gs of
+  Nothing   -> False
+  Just room ->
+    let tiles =
+          [ V2 x y
+          | x <- [D.rX room .. D.rX room + D.rW room - 1]
+          , y <- [D.rY room .. D.rY room + D.rH room - 1]
+          ]
+    in any (`Set.member` gsExplored gs) tiles
+
+-- | Pick a random top-left position inside a room such that a 2x2
+--   footprint fits entirely within the room's interior. For a room
+--   with width or height of exactly 1 (shouldn't happen given
+--   'lcRoomMin' = 4) this degenerates to the top-left corner.
+pickBossTopLeft :: D.Room -> StdGen -> (Pos, StdGen)
+pickBossTopLeft r gen0 =
+  let xMax    = D.rX r + max 0 (D.rW r - 2)
+      yMax    = D.rY r + max 0 (D.rH r - 2)
+      (x, g1) = randomR (D.rX r, xMax) gen0
+      (y, g2) = randomR (D.rY r, yMax) g1
+  in (V2 x y, g2)
 
 -- | Descend one floor. Fails with a flavor message if the player
 --   is not standing on 'StairsDown'. If the next floor has been
@@ -861,8 +976,16 @@ processMonster :: GameState -> Int -> Monster -> GameState
 processMonster gs i m =
   let dl        = gsLevel gs
       playerPos = gsPlayerPos gs
-      others    = [ mPos x | (j, x) <- zip [0 :: Int ..] (gsMonsters gs), j /= i ]
-      intent    = monsterIntent dl playerPos others (mPos m)
+      -- Every tile occupied by every /other/ monster — multi-tile
+      -- bosses contribute all of their footprint tiles here, so
+      -- a dragon next to a rat blocks every tile of its own
+      -- footprint, not just its top-left.
+      others    = concat
+        [ monsterTiles x
+        | (j, x) <- zip [0 :: Int ..] (gsMonsters gs)
+        , j /= i
+        ]
+      intent    = monsterIntent dl playerPos others m
   in case intent of
        MiWait -> gs
        MiMove newPos ->

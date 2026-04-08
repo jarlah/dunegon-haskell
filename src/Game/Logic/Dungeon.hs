@@ -6,6 +6,7 @@ module Game.Logic.Dungeon
   , roomsIntersect
   , placeRooms
   , generateLevel
+  , stripStairsDown
   ) where
 
 import qualified Data.Set as Set
@@ -17,22 +18,27 @@ import Game.Types
 
 -- | Knobs for a single-level generator run.
 data LevelConfig = LevelConfig
-  { lcWidth    :: !Int
-  , lcHeight   :: !Int
-  , lcMaxRooms :: !Int   -- ^ max placement attempts / rooms
-  , lcRoomMin  :: !Int   -- ^ min room edge length
-  , lcRoomMax  :: !Int   -- ^ max room edge length
-  , lcDepth    :: !Int
+  { lcWidth          :: !Int
+  , lcHeight         :: !Int
+  , lcMaxRooms       :: !Int   -- ^ max placement attempts / rooms
+  , lcRoomMin        :: !Int   -- ^ min room edge length
+  , lcRoomMax        :: !Int   -- ^ max room edge length
+  , lcDepth          :: !Int
+  , lcBossDepthRange :: !(Int, Int)
+    -- ^ inclusive range of depths at which the boss encounter may
+    --   appear. 'newGame' rolls a concrete 'gsBossDepth' once from
+    --   this range so every run has a single, fixed boss floor.
   } deriving (Eq, Show)
 
 defaultLevelConfig :: LevelConfig
 defaultLevelConfig = LevelConfig
-  { lcWidth    = 60
-  , lcHeight   = 20
-  , lcMaxRooms = 14
-  , lcRoomMin  = 4
-  , lcRoomMax  = 9
-  , lcDepth    = 1
+  { lcWidth          = 60
+  , lcHeight         = 20
+  , lcMaxRooms       = 14
+  , lcRoomMin        = 4
+  , lcRoomMax        = 9
+  , lcDepth          = 1
+  , lcBossDepthRange = (9, 11)
   }
 
 -- | An axis-aligned rectangular room. @(rX, rY)@ is the top-left corner.
@@ -142,3 +148,13 @@ generateLevel gen0 cfg =
 
 posToIdx :: Int -> Pos -> Int
 posToIdx w (V2 x y) = y * w + x
+
+-- | Turn every 'StairsDown' tile on a level into plain 'Floor'.
+--   Used by the boss floor: the run can't progress deeper than the
+--   dragon, so we remove the downward stair before handing the
+--   level to the player. Any other tile is left untouched.
+stripStairsDown :: DungeonLevel -> DungeonLevel
+stripStairsDown dl = dl { dlTiles = V.map swap (dlTiles dl) }
+  where
+    swap StairsDown = Floor
+    swap t          = t

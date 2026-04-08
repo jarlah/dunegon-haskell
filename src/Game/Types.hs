@@ -13,7 +13,12 @@ module Game.Types
   , monsterStats
   , monsterGlyph
   , monsterName
+  , monsterFootprint
+  , isBoss
   , Monster(..)
+  , mkMonster
+  , monsterTiles
+  , monsterOccupies
   , GameEvent(..)
   , Potion(..)
   , Weapon(..)
@@ -105,14 +110,20 @@ data Stats = Stats
   , sXP      :: !Int
   } deriving (Eq, Show)
 
-data MonsterKind = Rat | Goblin | Orc
+-- | All the kinds of monster the game currently knows how to spawn.
+--   Most kinds occupy a single tile; 'Dragon' is the first boss and
+--   occupies a 2×2 footprint (see 'monsterFootprint').
+data MonsterKind = Rat | Goblin | Orc | Dragon
   deriving (Eq, Show, Enum, Bounded)
 
--- | Baseline stats for a monster of the given kind.
+-- | Baseline stats for a monster of the given kind. Bosses are
+--   noticeably tougher than any regular monster — the Dragon is
+--   roughly 4-5x the HP of the toughest regular kind.
 monsterStats :: MonsterKind -> Stats
-monsterStats Rat    = baseStats  5 2 0 3
-monsterStats Goblin = baseStats 10 4 1 4
-monsterStats Orc    = baseStats 18 6 3 5
+monsterStats Rat    = baseStats  5  2 0 3
+monsterStats Goblin = baseStats 10  4 1 4
+monsterStats Orc    = baseStats 18  6 3 5
+monsterStats Dragon = baseStats 80 12 6 4
 
 -- | Helper: a level-1, zero-XP stat block from hp/atk/def/speed.
 baseStats :: Int -> Int -> Int -> Int -> Stats
@@ -130,17 +141,67 @@ monsterGlyph :: MonsterKind -> Char
 monsterGlyph Rat    = 'r'
 monsterGlyph Goblin = 'g'
 monsterGlyph Orc    = 'o'
+monsterGlyph Dragon = 'D'
 
 monsterName :: MonsterKind -> String
 monsterName Rat    = "rat"
 monsterName Goblin = "goblin"
 monsterName Orc    = "orc"
+monsterName Dragon = "dragon"
+
+-- | Rectangular footprint (width, height) a monster of this kind
+--   occupies. The top-left of the rectangle is the canonical
+--   'mPos'; all other tiles in @[mPos .. mPos + footprint - 1]@
+--   are also considered "this monster" for collision and attack
+--   resolution. Most kinds are 1×1.
+monsterFootprint :: MonsterKind -> Pos
+monsterFootprint Dragon = V2 2 2
+monsterFootprint _      = V2 1 1
+
+-- | True when a monster kind is a boss. Bosses fire 'EvBossKilled'
+--   on death, satisfy 'GoalKillBoss' quests, and (on the boss
+--   floor) have their own music cue.
+isBoss :: MonsterKind -> Bool
+isBoss Dragon = True
+isBoss _      = False
 
 data Monster = Monster
-  { mKind  :: !MonsterKind
-  , mPos   :: !Pos
-  , mStats :: !Stats
+  { mKind      :: !MonsterKind
+  , mPos       :: !Pos
+    -- ^ top-left corner of the monster's footprint
+  , mStats     :: !Stats
+  , mFootprint :: !Pos
+    -- ^ cached @(width, height)@ of this monster, derived from
+    --   its kind via 'monsterFootprint'. Kept on the record so
+    --   footprint lookups don't chase through a case per query
+    --   and so future bosses with per-instance footprints (e.g.
+    --   a kraken that grows over time) can override it.
   } deriving (Eq, Show)
+
+-- | Build a 'Monster' and stamp its footprint from its kind. Use
+--   this instead of the raw record constructor so new kinds only
+--   need a 'monsterFootprint' entry to Just Work.
+mkMonster :: MonsterKind -> Pos -> Monster
+mkMonster k p = Monster
+  { mKind      = k
+  , mPos       = p
+  , mStats     = monsterStats k
+  , mFootprint = monsterFootprint k
+  }
+
+-- | Every tile a monster occupies, top-left first. For 1×1
+--   creatures this is just @[mPos m]@.
+monsterTiles :: Monster -> [Pos]
+monsterTiles m =
+  let V2 w h = mFootprint m
+      V2 x y = mPos m
+  in [ V2 (x + dx) (y + dy) | dy <- [0 .. h - 1], dx <- [0 .. w - 1] ]
+
+-- | Does this monster occupy the given tile? Used by attack and
+--   movement resolution so a player swinging at any tile of a
+--   boss's footprint lands on the boss.
+monsterOccupies :: Monster -> Pos -> Bool
+monsterOccupies m p = p `elem` monsterTiles m
 
 -- | Semantic events produced by turn resolution. The pure logic layer
 --   emits these as a side-product of applying an action; the IO shell
@@ -153,6 +214,7 @@ data GameEvent
   | EvAttackHit      -- ^ player landed a normal hit
   | EvAttackCrit     -- ^ player landed a critical hit
   | EvMonsterKilled  -- ^ player killed a monster
+  | EvBossKilled     -- ^ player landed the killing blow on a boss
   | EvPlayerHurt     -- ^ a monster hit the player
   | EvPlayerDied     -- ^ a monster dealt the killing blow
   | EvLevelUp        -- ^ player gained an experience level

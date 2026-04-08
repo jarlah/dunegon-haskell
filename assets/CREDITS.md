@@ -11,6 +11,13 @@ traceable.
   - License: CC0
   - Looping 8-bit dungeon track.
 
+- `music/boss.ogg` — "Epic Boss Battle" by Juhani Junkala
+  - Source: https://opengameart.org/content/boss-battle-music
+  - License: CC0
+  - Seamlessly-looping dark orchestral boss theme (God of War-inspired).
+  - Transcoded from the original 21.8 MB WAV to OGG Vorbis (q4) for
+    consistency with `theme.ogg` and to keep the asset bundle small.
+
 ## SFX — from Kenney "RPG Audio" pack
 
 https://kenney.nl/assets/rpg-audio — CC0

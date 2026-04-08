@@ -15,7 +15,7 @@ import Game.Input (handleKey)
 import Game.Logic.Command (parseCommand)
 import Game.Logic.Dungeon (defaultLevelConfig)
 import Game.Logic.Quest (Quest(..), QuestStatus(..))
-import Game.Render (drawGame, fogAttr, npcAttr)
+import Game.Render (drawGame, bossAttr, fogAttr, npcAttr)
 import Game.Types (GameAction(..), Inventory(..))
 
 -- | Build the Brick 'App' with audio closed into the event handler.
@@ -27,8 +27,9 @@ mkApp mAudio = App
   , appHandleEvent  = handleEvent mAudio
   , appStartEvent   = pure ()
   , appAttrMap      = const $ attrMap V.defAttr
-      [ (fogAttr, fg V.brightBlack)
-      , (npcAttr, fg V.yellow)
+      [ (fogAttr,  fg V.brightBlack)
+      , (npcAttr,  fg V.yellow)
+      , (bossAttr, fg V.red)
       ]
   }
 
@@ -37,13 +38,45 @@ handleEvent mAudio (VtyEvent (V.EvKey key mods)) = do
   gs <- get
   case () of
     _ | gsConfirmQuit gs            -> handleConfirmQuitKey key
+      | gsVictory gs                -> handleVictoryKey key
       | gsHelpOpen gs               -> handleHelpKey key
       | Just buf <- gsPrompt gs     -> handlePromptKey key buf
       | Just i   <- gsDialogue gs   -> handleDialogueKey mAudio i key
       | gsQuestLogOpen gs           -> handleQuestLogKey key
       | gsInventoryOpen gs          -> handleInventoryKey mAudio key
       | otherwise                   -> handleNormalKey mAudio key mods
+  -- Every key event is an opportunity to swap music tracks — the
+  -- player may have just walked into the boss room's line of sight,
+  -- or descended onto the boss floor, or climbed back off it.
+  updateMusicFor mAudio
 handleEvent _ _ = pure ()
+
+-- | Consult the current 'GameState' and tell the audio shell which
+--   music loop should be playing. The decision is delegated to
+--   'shouldPlayBossMusic', which keeps Main.hs free of dungeon
+--   geometry and set imports.
+updateMusicFor :: Maybe Audio.AudioSystem -> EventM () GameState ()
+updateMusicFor Nothing      = pure ()
+updateMusicFor (Just audio) = do
+  gs <- get
+  let track = if shouldPlayBossMusic gs
+                then Audio.BossMusic
+                else Audio.DungeonMusic
+  liftIO $ Audio.setMusic audio track
+
+-- | Keystrokes while the victory modal is shown. The game is over
+--   but not dead — any of q / Q / Esc opens the quit-confirmation
+--   modal (so a fat-fingered key can't misfire), and everything
+--   else is swallowed. There's no "continue playing" path because
+--   the dragon is dead and the boss floor has no stairs down.
+handleVictoryKey :: V.Key -> EventM () GameState ()
+handleVictoryKey (V.KChar 'q') =
+  modify (\gs -> gs { gsConfirmQuit = True })
+handleVictoryKey (V.KChar 'Q') =
+  modify (\gs -> gs { gsConfirmQuit = True })
+handleVictoryKey V.KEsc =
+  modify (\gs -> gs { gsConfirmQuit = True })
+handleVictoryKey _ = pure ()
 
 -- | Keystrokes while the quit-confirmation modal is open.
 --   @y@ actually halts the app; @n@, @Esc@, or anything else
