@@ -46,15 +46,24 @@ library
     Game.Render
     Game.Input
     Game.Audio
+    Game.Save.Types
+    Game.Save
   build-depends:
     , linear
     , vector
+    , vector-binary-instances
     , containers
     , random
     , brick
     , vty
     , vty-crossplatform
     , proteaaudio-sdl
+    , binary
+    , bytestring
+    , directory
+    , time
+    , filepath
+    , splitmix
 
 executable dungeon-haskell
   import:              shared
@@ -85,6 +94,7 @@ test-suite dungeon-haskell-test
     Game.Logic.LootSpec
     Game.Logic.QuestSpec
     Game.GameStateSpec
+    Game.SaveSpec
   build-depends:
     , dungeon-haskell
     , hspec
@@ -93,6 +103,9 @@ test-suite dungeon-haskell-test
     , vector
     , containers
     , random
+    , bytestring
+    , binary
+    , temporary
   build-tool-depends:
     hspec-discover:hspec-discover
   ghc-options:         -threaded -rtsopts

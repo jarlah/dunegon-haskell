@@ -15,6 +15,7 @@ import Game.GameState
 import Game.Logic.Command (Command(..))
 import Game.Logic.Quest
   ( Quest(..), QuestGoal(..), QuestStatus(..), mkQuest )
+import Game.Save (decodeSave, encodeSave)
 import Game.Types
 
 -- | A tiny 5x5 open room with walls around the edge, so the player
@@ -59,6 +60,8 @@ mkFixture seed ppos pstats monsters = GameState
   , gsBossRoom       = Nothing
   , gsVictory        = False
   , gsLevels        = mempty
+  , gsSaveMenu       = Nothing
+  , gsLaunchMenu     = Nothing
   }
 
 -- | Player stats strong enough to one-shot anything normal.
@@ -353,6 +356,45 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
     case gsBossRoom gs1 of
       Just _  -> pure ()
       Nothing -> expectationFailure "expected gsBossRoom to be set on a boss floor"
+
+  -- ----------------------------------------------------------------
+  -- M13: save/load snapshot semantics
+  --
+  -- The save system serializes the whole 'GameState' as one blob,
+  -- which means modal flags ride along with it. Verify that a
+  -- save/load round-trip preserves those flags so the player comes
+  -- back to exactly the UI state they left. The filesystem layer
+  -- has its own tests in Game.SaveSpec — here we go through the
+  -- pure encodeSave / decodeSave codec so the test stays hermetic.
+  -- ----------------------------------------------------------------
+
+  it "save/load preserves the inventory-open modal flag" $ do
+    let gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                { gsInventoryOpen = True }
+    case decodeSave (encodeSave gs0) of
+      Right gs' -> gsInventoryOpen gs' `shouldBe` True
+      Left e    ->
+        expectationFailure ("decode failed: " ++ show e)
+
+  it "save/load preserves the quest-log-open modal flag" $ do
+    let gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                { gsQuestLogOpen   = True
+                , gsQuestLogCursor = Just 2
+                }
+    case decodeSave (encodeSave gs0) of
+      Right gs' -> do
+        gsQuestLogOpen   gs' `shouldBe` True
+        gsQuestLogCursor gs' `shouldBe` Just 2
+      Left e -> expectationFailure ("decode failed: " ++ show e)
+
+  it "save/load preserves player position and messages" $ do
+    let gs0 = (mkFixture 1 (V2 3 3) overpoweredPlayer [])
+                { gsMessages = ["hello", "world"] }
+    case decodeSave (encodeSave gs0) of
+      Right gs' -> do
+        gsPlayerPos gs' `shouldBe` V2 3 3
+        gsMessages  gs' `shouldBe` ["hello", "world"]
+      Left e -> expectationFailure ("decode failed: " ++ show e)
 
 -- | Build a test NPC with two starter offers, placed at the
 --   given position.

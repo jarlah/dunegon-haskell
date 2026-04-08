@@ -3,6 +3,11 @@ module Game.Render
   , fogAttr
   , npcAttr
   , bossAttr
+  , saveMenuCursorAttr
+  , saveMenuEmptyAttr
+  , launchCursorAttr
+  , launchDisabledAttr
+  , launchTitleAttr
   ) where
 
 import Brick
@@ -18,6 +23,7 @@ import qualified Game.Logic.Inventory as Inv
 import Game.Logic.Progression (xpForNextLevel)
 import Game.Logic.Quest
   ( Quest(..), QuestStatus(..), questDescription, questProgressLabel )
+import Game.Save.Types (SaveMetadata(..))
 import Game.Types
 
 -- | Attribute name used for "explored but not currently visible"
@@ -38,6 +44,36 @@ npcAttr = attrName "npc"
 bossAttr :: AttrName
 bossAttr = attrName "boss"
 
+-- | Attribute name for the highlighted cursor row in the save/load
+--   modal. Main wires this to a reverse-video attribute so the
+--   selected row stands out regardless of terminal color support.
+saveMenuCursorAttr :: AttrName
+saveMenuCursorAttr = attrName "saveMenuCursor"
+
+-- | Attribute name for an empty slot row in the save/load modal
+--   when shown in load mode (where empty slots are non-selectable).
+--   Main wires this to a dim foreground.
+saveMenuEmptyAttr :: AttrName
+saveMenuEmptyAttr = attrName "saveMenuEmpty"
+
+-- | Attribute name for the highlighted option on the launch /
+--   title screen. Main wires this to reverse-video so the current
+--   selection stands out independently of terminal color support.
+launchCursorAttr :: AttrName
+launchCursorAttr = attrName "launchCursor"
+
+-- | Attribute name for a disabled launch-menu option (for example,
+--   Continue / Load when no saves exist). Main wires this to a
+--   dim foreground so the row is visible but clearly inert.
+launchDisabledAttr :: AttrName
+launchDisabledAttr = attrName "launchDisabled"
+
+-- | Attribute name for the game-title banner on the launch screen.
+--   Main wires this to a bright color so the title reads as the
+--   focal point of the screen.
+launchTitleAttr :: AttrName
+launchTitleAttr = attrName "launchTitle"
+
 drawGame :: GameState -> [Widget ()]
 drawGame gs =
   let baseLayer = vBox
@@ -48,16 +84,22 @@ drawGame gs =
         , drawMessages gs
         , str "? for help    q/Esc to quit"
         ]
-  in case gsDialogue gs of
-       Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
-         [drawDialogueModal (gsQuests gs) i npc, baseLayer]
-       _
-         | gsVictory      gs  -> [drawVictoryModal, baseLayer]
-         | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
-         | gsHelpOpen     gs  -> [drawHelpModal, baseLayer]
-         | gsQuestLogOpen gs  -> [drawQuestLogModal gs, baseLayer]
-         | gsInventoryOpen gs -> [drawInventoryModal gs, baseLayer]
-         | otherwise          -> [baseLayer]
+  in case gsLaunchMenu gs of
+       -- Launch / title screen swallows the whole viewport so no
+       -- gameplay artifacts leak through before the player picks
+       -- New Game / Continue / Load / Quit.
+       Just lm -> [drawLaunchMenu gs lm]
+       Nothing -> case gsDialogue gs of
+         Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
+           [drawDialogueModal (gsQuests gs) i npc, baseLayer]
+         _
+           | gsVictory      gs  -> [drawVictoryModal, baseLayer]
+           | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
+           | gsHelpOpen     gs  -> [drawHelpModal, baseLayer]
+           | Just sm <- gsSaveMenu gs -> [drawSaveMenuModal sm, baseLayer]
+           | gsQuestLogOpen gs  -> [drawQuestLogModal gs, baseLayer]
+           | gsInventoryOpen gs -> [drawInventoryModal gs, baseLayer]
+           | otherwise          -> [baseLayer]
   where
     nthMaybe n xs
       | n < 0 || n >= length xs = Nothing
@@ -293,6 +335,108 @@ drawQuitConfirmModal =
         , str "  y : yes, quit"
         , str "  n / Esc : keep playing"
         ]
+
+-- | Save / load picker modal. Renders the slot list as a vertical
+--   column, one row per slot, with the currently-highlighted row
+--   drawn in reverse video ('saveMenuCursorAttr'). In save mode
+--   every slot is selectable — an empty slot says @(empty)@ and
+--   overwriting an existing one kicks the confirm path. In load
+--   mode empty slots are greyed out ('saveMenuEmptyAttr') and
+--   non-selectable.
+--
+--   The confirm overlay ("Overwrite slot N? y/n") is drawn in the
+--   bottom hint area instead of a second centered modal so the
+--   underlying slot list stays on-screen and the player can see
+--   what they're about to overwrite.
+drawSaveMenuModal :: SaveMenu -> Widget ()
+drawSaveMenuModal sm =
+  let title = case smMode sm of
+        SaveMode -> " Save Game "
+        LoadMode -> " Load Game "
+      rows = zipWith (drawRow (smMode sm) (smCursor sm)) [0 ..] (smSlots sm)
+      hint = case (smMode sm, smConfirm sm) of
+        (_, True) ->
+          str "Overwrite this slot?   y : yes   n / Esc : cancel"
+        (SaveMode, False) ->
+          str "[a-z] select slot   x delete   Esc close"
+        (LoadMode, False) ->
+          str "[a-z] load   x delete   Esc close"
+      body = vBox $ rows ++ [str "", hint]
+  in centerLayer $ borderWithLabel (str title) $ padAll 1 body
+  where
+    drawRow :: SaveMenuMode -> Int -> Int -> SaveMenuEntry -> Widget ()
+    drawRow mode cursor idx entry =
+      let letter  = toEnum (fromEnum 'a' + idx) :: Char
+          slotLbl = sseSlotLabel entry
+          summary = case sseMeta entry of
+            Just md ->
+              "depth " ++ show (smDepth md)
+              ++ "  lvl " ++ show (smPlayerLvl md)
+              ++ "  hp " ++ show (smPlayerHP md)
+            Nothing -> "(empty)"
+          line    = "  " ++ [letter] ++ ") "
+                    ++ padRightStr 8 slotLbl ++ "  —  " ++ summary
+          styled =
+            case (mode, sseMeta entry) of
+              (LoadMode, Nothing) -> withAttr saveMenuEmptyAttr (str line)
+              _                   -> str line
+      in if idx == cursor
+           then withAttr saveMenuCursorAttr styled
+           else styled
+
+    padRightStr :: Int -> String -> String
+    padRightStr n s = s ++ replicate (max 0 (n - length s)) ' '
+
+-- | Full-screen title / launch screen shown before the player has
+--   chosen an entry point (New Game / Continue / Load / Quit). Uses
+--   a centered bordered panel so it feels intentional even at very
+--   wide terminal sizes. Disabled options (Continue / Load with no
+--   saves present) are dimmed via 'launchDisabledAttr' so the
+--   player can still see them but knows they won't respond.
+drawLaunchMenu :: GameState -> LaunchMenu -> Widget ()
+drawLaunchMenu _ lm =
+  centerLayer
+    $ borderWithLabel (str " Dungeon Haskell ")
+    $ padAll 2
+    $ vBox
+        ( titleBanner
+          ++ [str ""]
+          ++ zipWith renderOption [0 ..] launchOptions
+          ++ [str "", hint]
+        )
+  where
+    cursor   = lmCursor lm
+    hasSaves = lmHasSaves lm
+
+    titleBanner =
+      [ withAttr launchTitleAttr (str "      D U N G E O N   H A S K E L L      ")
+      , str "       a small terminal roguelike         "
+      ]
+
+    isEnabled opt = case opt of
+      LaunchNewGame  -> True
+      LaunchContinue -> hasSaves
+      LaunchLoad     -> hasSaves
+      LaunchQuit     -> True
+
+    optionLabel opt = case opt of
+      LaunchNewGame  -> "New Game"
+      LaunchContinue -> "Continue   (most recent save)"
+      LaunchLoad     -> "Load Game  (pick a slot)"
+      LaunchQuit     -> "Quit"
+
+    renderOption idx opt =
+      let marker = if idx == cursor then " > " else "   "
+          line   = marker ++ optionLabel opt
+          base   = str line
+          styled
+            | not (isEnabled opt) = withAttr launchDisabledAttr base
+            | otherwise           = base
+      in if idx == cursor
+           then withAttr launchCursorAttr styled
+           else styled
+
+    hint = str "  ↑/↓ select    Enter confirm    q / Esc quit"
 
 -- | Shown when the player lands the killing blow on the dragon.
 --   Freezes the game (gameplay input is ignored while gsVictory is

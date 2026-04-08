@@ -2,6 +2,12 @@ module Game.GameState
   ( GameState(..)
   , ParkedLevel(..)
   , NPC(..)
+  , SaveMenu(..)
+  , SaveMenuMode(..)
+  , SaveMenuEntry(..)
+  , LaunchMenu(..)
+  , LaunchOption(..)
+  , launchOptions
   , mkGameState
   , newGame
   , defaultPlayerStats
@@ -24,6 +30,7 @@ import qualified Data.Vector as V
 import Linear (V2(..))
 import System.Random (StdGen, mkStdGen, randomR)
 
+import Game.Save.Types (SaveMetadata)
 import Game.Types
 import qualified Game.Logic.Combat as C
 import Game.Logic.Combat (Damage(..))
@@ -136,7 +143,105 @@ data GameState = GameState
     --   monsters, items, explored set, and the position the player
     --   was standing on when they left, so going back up returns
     --   them to exactly where they descended from.
+  , gsSaveMenu    :: !(Maybe SaveMenu)
+    -- ^ state for the in-game save / load picker modal. 'Nothing'
+    --   means the modal is closed and input routes normally.
+    --   'Just' carries the mode (save vs load), the snapshotted
+    --   list of save slots as of when the menu was opened, and
+    --   the currently-highlighted cursor. The snapshot is taken
+    --   when the menu opens so a save operation mid-menu doesn't
+    --   cause the entry list to shift under the cursor.
+  , gsLaunchMenu  :: !(Maybe LaunchMenu)
+    -- ^ state for the title / launch screen shown at startup.
+    --   'Just' means the player hasn't picked an entry point yet —
+    --   input routes exclusively through the launch-menu handler
+    --   and the renderer shows the title screen. The field is
+    --   cleared when the player picks /New Game/, /Continue/, or
+    --   /Load/. A successful load replaces the entire 'GameState',
+    --   so the loaded blob — which was saved with 'Nothing' here —
+    --   carries no leftover launch state.
   } deriving (Show)
+
+-- | UI state for the save/load picker modal. Kept entirely in
+--   pure 'GameState' so it round-trips through 'Binary' — the menu
+--   itself is never meant to be present in an on-disk save, but
+--   the whole 'GameState' is serialized as one blob and keeping
+--   this field pure avoids a special-case handling of it. When a
+--   save is loaded the menu field is cleared by the load handler.
+data SaveMenu = SaveMenu
+  { smMode    :: !SaveMenuMode
+  , smSlots   :: ![SaveMenuEntry]
+    -- ^ one entry per visible slot row, already collated from the
+    --   live save directory at the moment the menu was opened and
+    --   padded with placeholder rows for empty numbered slots so
+    --   the player can write to them.
+  , smCursor  :: !Int
+    -- ^ index into 'smSlots' currently highlighted
+  , smConfirm :: !Bool
+    -- ^ 'True' iff we're waiting for a y/n on an overwrite
+    --   confirmation (save mode only). The confirm prompt reuses
+    --   the cursor row, so we only need a boolean flag here.
+  } deriving (Eq, Show)
+
+-- | Save vs. Load modal mode. The two share layout, cursor, and
+--   entry list, but differ in what the letter keys do (write vs.
+--   read) and in how empty rows render (writable placeholder vs.
+--   greyed out).
+data SaveMenuMode = SaveMode | LoadMode
+  deriving (Eq, Show)
+
+-- | One row in the save/load picker. Rows cover both /existing/
+--   saves and /empty/ numbered slots the player may write to, so
+--   the menu is a stable grid rather than a collapsing list.
+data SaveMenuEntry = SaveMenuEntry
+  { sseMeta :: !(Maybe SaveMetadata)
+    -- ^ 'Just' when a save file already exists at this slot,
+    --   'Nothing' for an empty slot (still selectable in save
+    --   mode, greyed-out in load mode).
+  , sseSlotLabel :: !String
+    -- ^ pre-rendered slot identifier ("Quick", "Slot 1", ...)
+    --   so the renderer doesn't need to pattern-match on the
+    --   underlying 'SaveSlot' type.
+  , sseIsQuick :: !Bool
+    -- ^ 'True' for the quicksave row, 'False' for numbered slots
+  , sseSlotNum :: !Int
+    -- ^ 0 for the quick slot, N for NumberedSlot N
+  } deriving (Eq, Show)
+
+-- | UI state for the launch / title screen shown at startup.
+--   The options themselves live in 'launchOptions' so the renderer
+--   and the input handler agree on the order. Only the cursor
+--   position is stored here — everything else is derived.
+data LaunchMenu = LaunchMenu
+  { lmCursor   :: !Int
+    -- ^ index into 'launchOptions' currently highlighted
+  , lmHasSaves :: !Bool
+    -- ^ sampled from the save directory when the launch screen
+    --   was opened. 'False' greys out the /Continue/ and /Load/
+    --   options in the renderer, and the handler refuses to act
+    --   on them — both keep the menu open with no side effect.
+  } deriving (Eq, Show)
+
+-- | Options shown on the launch screen. The order here is the
+--   on-screen order and the index used by 'lmCursor'.
+data LaunchOption
+  = LaunchNewGame
+    -- ^ start a fresh run
+  | LaunchContinue
+    -- ^ load the most recent save (quicksave or slot) — disabled
+    --   when no saves exist
+  | LaunchLoad
+    -- ^ open the load picker to choose a specific slot — disabled
+    --   when no saves exist
+  | LaunchQuit
+    -- ^ exit the game without playing
+  deriving (Eq, Show)
+
+-- | The fixed order of options on the launch screen. Kept as a
+--   top-level list so the renderer and the key handler agree on
+--   indices without having to duplicate the list.
+launchOptions :: [LaunchOption]
+launchOptions = [LaunchNewGame, LaunchContinue, LaunchLoad, LaunchQuit]
 
 -- | State of a dungeon level the player is not currently standing
 --   on. Preserves everything that should survive a round-trip
@@ -216,7 +321,9 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsBossDepth      = 10
   , gsBossRoom       = Nothing
   , gsVictory        = False
-  , gsLevels      = Map.empty
+  , gsLevels         = Map.empty
+  , gsSaveMenu       = Nothing
+  , gsLaunchMenu     = Nothing
   }
 
 -- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
