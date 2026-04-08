@@ -53,6 +53,7 @@ mkFixture seed ppos pstats monsters = GameState
   , gsQuestLogOpen   = False
   , gsQuestLogCursor = Nothing
   , gsConfirmQuit    = False
+  , gsHelpOpen       = False
   , gsLevels        = mempty
   }
 
@@ -154,9 +155,10 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
     length (gsQuests gs') `shouldBe` 1
     qStatus (head (gsQuests gs')) `shouldBe` QuestActive
 
-  it "a killed monster advances an accepted NPC quest" $ do
+  it "a killed monster advances an accepted NPC quest to ready-to-turn-in" $ do
     -- Accept a kill-1-monster quest, then kill a rat adjacent to
-    -- the player. Quest should flip to completed.
+    -- the player. Quest should flip to ready-to-turn-in (it still
+    -- needs to be handed back to an NPC for the reward).
     let offer       = (mkQuest "Tiny Slayer" (GoalKillMonsters 1))
                         { qStatus = QuestNotStarted }
         npc         = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
@@ -166,7 +168,7 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs1         = acceptQuestFromNPC 0 0 gs0
         gs2         = applyAction (Move N) gs1     -- kill the rat
     length (gsQuests gs2) `shouldBe` 1
-    qStatus (head (gsQuests gs2)) `shouldBe` QuestCompleted
+    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
 
   -- ----------------------------------------------------------------
   -- M10.2: quest log / abandon
@@ -209,6 +211,91 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
                }
         gs' = abandonQuest 0 gs
     gsQuestLogCursor gs' `shouldBe` Nothing
+
+  -- ----------------------------------------------------------------
+  -- M12: quest turn-in and XP rewards
+  -- ----------------------------------------------------------------
+
+  it "goal-met quests flip to ready-to-turn-in without awarding XP" $ do
+    -- Slayer with target 1 and a fat reward. Kill a rat — the
+    -- quest should go ready but XP stays at its pre-kill value
+    -- modulo the small XP the rat itself gives via P.gainXP.
+    -- To isolate the quest reward we check only that XP is NOT
+    -- yet inflated by the 100 reward.
+    let offer = (mkQuest "TinySlayer" (GoalKillMonsters 1))
+                  { qStatus = QuestNotStarted, qReward = 100 }
+        npc   = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        rat   = ratAt (V2 2 1)
+        gs0   = (mkFixture 3 (V2 2 2) overpoweredPlayer [rat])
+                  { gsNPCs = [npc] }
+        gs1   = acceptQuestFromNPC 0 0 gs0
+        gs2   = applyAction (Move N) gs1
+    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
+    -- 5 XP from the rat kill itself, no 100-XP reward yet.
+    sXP (gsPlayerStats gs2) `shouldBe` 5
+
+  it "turning in at the original giver awards full XP and fires EvQuestTurnedIn" $ do
+    let offer = (mkQuest "TinySlayer" (GoalKillMonsters 1))
+                  { qStatus = QuestNotStarted, qReward = 10 }
+        npc   = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        rat   = ratAt (V2 2 1)
+        gs0   = (mkFixture 3 (V2 2 2) overpoweredPlayer [rat])
+                  { gsNPCs = [npc] }
+        gs1   = acceptQuestFromNPC 0 0 gs0
+        gs2   = applyAction (Move N) gs1          -- kill, goes ready
+        xpPre = sXP (gsPlayerStats gs2)
+        gs3   = turnInQuest 0 0 gs2               -- hand in at original NPC
+    qStatus (head (gsQuests gs3)) `shouldBe` QuestCompleted
+    sXP (gsPlayerStats gs3) `shouldBe` xpPre + 10
+    EvQuestTurnedIn `elem` gsEvents gs3 `shouldBe` True
+
+  it "turning in at a non-giver awards half XP" $ do
+    -- Two NPCs. The Quest Master at index 0 gives the quest;
+    -- a "Stranger" at index 1 accepts the turn-in for half.
+    let offer    = (mkQuest "TinySlayer" (GoalKillMonsters 1))
+                     { qStatus = QuestNotStarted, qReward = 20 }
+        giver    = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        stranger = NPC
+          { npcName     = "Stranger"
+          , npcPos      = V2 3 3
+          , npcGreeting = "Well met."
+          , npcOffers   = []
+          }
+        rat      = ratAt (V2 2 1)
+        gs0      = (mkFixture 3 (V2 2 2) overpoweredPlayer [rat])
+                     { gsNPCs = [giver, stranger] }
+        gs1      = acceptQuestFromNPC 0 0 gs0       -- giver stamps qGiver=Just 0
+        gs2      = applyAction (Move N) gs1         -- kill, goes ready
+        xpPre    = sXP (gsPlayerStats gs2)
+        gs3      = turnInQuest 1 0 gs2              -- hand in at the Stranger
+    qStatus (head (gsQuests gs3)) `shouldBe` QuestCompleted
+    sXP (gsPlayerStats gs3) `shouldBe` xpPre + (20 `div` 2)
+
+  it "turn-in can trigger a level up and fire EvLevelUp" $ do
+    -- Put the player near the level threshold and give the quest
+    -- a big enough reward to cross it. Level curve at L1 = 25 XP.
+    let almost = overpoweredPlayer { sXP = 0 }
+        offer  = (mkQuest "BigBounty" (GoalKillMonsters 1))
+                   { qStatus = QuestNotStarted, qReward = 30 }
+        npc    = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        rat    = ratAt (V2 2 1)
+        gs0    = (mkFixture 3 (V2 2 2) almost [rat]) { gsNPCs = [npc] }
+        gs1    = acceptQuestFromNPC 0 0 gs0
+        gs2    = applyAction (Move N) gs1             -- 5 XP from rat
+        gs3    = turnInQuest 0 0 gs2                  -- +30 XP pushes past 25
+    sLevel (gsPlayerStats gs3) `shouldBe` 2
+    EvLevelUp       `elem` gsEvents gs3 `shouldBe` True
+    EvQuestTurnedIn `elem` gsEvents gs3 `shouldBe` True
+
+  it "turnInQuest is a no-op on a non-ready quest" $ do
+    let q  = mkQuest "Active" (GoalKillMonsters 5)  -- still active
+        gs = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+               { gsQuests = [q]
+               , gsNPCs   = [mkQuestMaster (V2 0 0)]
+               }
+        gs' = turnInQuest 0 0 gs
+    gsQuests gs' `shouldBe` gsQuests gs
+    sXP (gsPlayerStats gs') `shouldBe` sXP (gsPlayerStats gs)
 
 -- | Build a test NPC with two starter offers, placed at the
 --   given position.

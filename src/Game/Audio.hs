@@ -79,6 +79,11 @@ playEvent as ev = do
         EvPlayerHurt    -> asHurt    as
         EvPlayerDied    -> asDied    as
         EvLevelUp       -> asLevelUp as
+        -- Quest turn-in reuses the level-up jingle for now — it's a
+        -- positive progression sting, which is the same emotional
+        -- beat. A dedicated asset can slot in later without touching
+        -- the event pump.
+        EvQuestTurnedIn -> asLevelUp as
   _ <- (try (PA.soundPlay sample 1.0 1.0 0.0 1.0))
          :: IO (Either SomeException PA.Sound)
   pure ()

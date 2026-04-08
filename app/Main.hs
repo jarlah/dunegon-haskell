@@ -37,8 +37,9 @@ handleEvent mAudio (VtyEvent (V.EvKey key mods)) = do
   gs <- get
   case () of
     _ | gsConfirmQuit gs            -> handleConfirmQuitKey key
+      | gsHelpOpen gs               -> handleHelpKey key
       | Just buf <- gsPrompt gs     -> handlePromptKey key buf
-      | Just i   <- gsDialogue gs   -> handleDialogueKey i key
+      | Just i   <- gsDialogue gs   -> handleDialogueKey mAudio i key
       | gsQuestLogOpen gs           -> handleQuestLogKey key
       | gsInventoryOpen gs          -> handleInventoryKey mAudio key
       | otherwise                   -> handleNormalKey mAudio key mods
@@ -52,6 +53,13 @@ handleConfirmQuitKey (V.KChar 'y') = halt
 handleConfirmQuitKey (V.KChar 'Y') = halt
 handleConfirmQuitKey _ =
   modify (\gs -> gs { gsConfirmQuit = False })
+
+-- | Keystrokes while the help modal is open. Any key closes it —
+--   there is no selection or sub-navigation, the modal is purely a
+--   reference sheet.
+handleHelpKey :: V.Key -> EventM () GameState ()
+handleHelpKey _ =
+  modify (\gs -> gs { gsHelpOpen = False })
 
 -- | Keystrokes while the quest log modal is open. Letters @a@..@z@
 --   select the active quest at that index (the selection is shown
@@ -78,14 +86,16 @@ handleQuestLogKey (V.KChar c)
         else pure ()
 handleQuestLogKey _ = pure ()
 
--- | Keystrokes while an NPC dialogue modal is open. Letters
---   @a@..@z@ accept the offer at that index; 'Esc' closes the
---   modal without accepting anything. Monsters do not act either
---   way — peaceful conversation is a free action.
-handleDialogueKey :: Int -> V.Key -> EventM () GameState ()
-handleDialogueKey _ V.KEsc =
+-- | Keystrokes while an NPC dialogue modal is open. Lowercase
+--   @a@..@z@ accept an offered quest; uppercase @A@..@Z@ hand in
+--   a ready-to-turn-in quest the player is carrying; 'Esc' closes
+--   the modal without any action. Monsters do not act either way
+--   — peaceful conversation is a free action, as is collecting
+--   quest rewards.
+handleDialogueKey :: Maybe Audio.AudioSystem -> Int -> V.Key -> EventM () GameState ()
+handleDialogueKey _ _ V.KEsc =
   modify (\gs -> gs { gsDialogue = Nothing })
-handleDialogueKey npcIdx (V.KChar c)
+handleDialogueKey mAudio npcIdx (V.KChar c)
   | c >= 'a' && c <= 'z' = do
       gs <- get
       let offerIdx = ord c - ord 'a'
@@ -95,17 +105,37 @@ handleDialogueKey npcIdx (V.KChar c)
       if offerIdx < length offers
         then do
           modify (acceptQuestFromNPC npcIdx offerIdx)
-          -- If this was the last offer, auto-close the dialogue
-          -- so the player doesn't stare at an empty quest list.
-          gs' <- get
-          let stillOffering = case drop npcIdx (gsNPCs gs') of
-                (n : _) -> not (null (npcOffers n))
-                []      -> False
-          if stillOffering
-            then pure ()
-            else modify (\s -> s { gsDialogue = Nothing })
+          -- If that was the last offer *and* the player has no
+          -- ready quests to turn in here, auto-close the dialogue
+          -- so they don't stare at an empty quest list.
+          autoCloseIfIdle npcIdx
         else pure ()
-handleDialogueKey _ _ = pure ()
+  | c >= 'A' && c <= 'Z' = do
+      gs <- get
+      let readyIdx = ord c - ord 'A'
+          ready    = [ q | q <- gsQuests gs, qStatus q == QuestReadyToTurnIn ]
+      if readyIdx < length ready
+        then do
+          modify (turnInQuest npcIdx readyIdx)
+          playEventsFor mAudio
+          autoCloseIfIdle npcIdx
+        else pure ()
+handleDialogueKey _ _ _ = pure ()
+
+-- | Close the dialogue modal if the NPC has no remaining offers
+-- /and/ the player has no further quests ready to hand in here.
+-- Called after accept/turn-in so the player isn't left staring at
+-- an empty dialogue screen.
+autoCloseIfIdle :: Int -> EventM () GameState ()
+autoCloseIfIdle npcIdx = do
+  gs <- get
+  let stillOffering = case drop npcIdx (gsNPCs gs) of
+        (n : _) -> not (null (npcOffers n))
+        []      -> False
+      stillReady = any (\q -> qStatus q == QuestReadyToTurnIn) (gsQuests gs)
+  if stillOffering || stillReady
+    then pure ()
+    else modify (\s -> s { gsDialogue = Nothing })
 
 -- | Keystrokes while the inventory modal is open. Letters @a@..@z@
 --   select the item at that index and apply its default action;
@@ -160,6 +190,8 @@ handlePromptKey key buf = case key of
 handleNormalKey :: Maybe Audio.AudioSystem -> V.Key -> [V.Modifier] -> EventM () GameState ()
 handleNormalKey _ (V.KChar '/') _ =
   modify (\gs -> gs { gsPrompt = Just "" })
+handleNormalKey _ (V.KChar '?') _ =
+  modify (\gs -> gs { gsHelpOpen = True })
 handleNormalKey _ (V.KChar 'i') _ =
   modify (\gs -> gs { gsInventoryOpen = True })
 handleNormalKey _ (V.KChar 'Q') _ =

@@ -24,6 +24,7 @@ module Game.Logic.Quest
     -- * Queries
   , isCompleted
   , isFailed
+  , isReady
   , questDescription
   , questProgressLabel
   ) where
@@ -39,12 +40,19 @@ data QuestGoal
 
 -- | Quest lifecycle. 'QuestActive' and 'QuestNotStarted' are
 --   distinct so consumers can surface "not yet accepted" quests
---   differently from "in progress" ones — useful for future
---   quest-giver NPCs. 'QuestCompleted' and 'QuestFailed' are
---   terminal; neither ever transitions back.
+--   differently from "in progress" ones. 'QuestReadyToTurnIn' is
+--   the intermediate state a quest enters when its goal is met —
+--   no XP is awarded and the quest is not "done" until the player
+--   returns to an NPC and hands it in, at which point it flips to
+--   'QuestCompleted'. 'QuestCompleted' and 'QuestFailed' are
+--   terminal; neither ever transitions back. 'QuestReadyToTurnIn'
+--   is also absorbing w.r.t. 'advanceQuest' — further world events
+--   don't move it — but the GameState layer *does* move it to
+--   'QuestCompleted' via 'turnInQuest'.
 data QuestStatus
   = QuestNotStarted
   | QuestActive
+  | QuestReadyToTurnIn
   | QuestCompleted
   | QuestFailed
   deriving (Eq, Show)
@@ -67,19 +75,33 @@ data Quest = Quest
     --   this is a running count; for 'GoalReachDepth' it is the
     --   deepest depth ever visited.
   , qStatus   :: !QuestStatus
+  , qReward   :: !Int
+    -- ^ XP bounty awarded when the quest is turned in at an NPC.
+    --   A quest with @qReward = 0@ still works — it just doesn't
+    --   give XP, so it only serves as a journal entry.
+  , qGiver    :: !(Maybe Int)
+    -- ^ index into 'gsNPCs' of the NPC that originally offered
+    --   the quest, stamped at accept time. Turning the quest in
+    --   at this NPC awards the full 'qReward'; at any other NPC
+    --   the player gets half. 'Nothing' means the quest has no
+    --   originating NPC (e.g., a debug-seeded quest) and any NPC
+    --   pays full bounty.
   } deriving (Eq, Show)
 
 -- | Build a quest in its initial 'QuestActive' state with zero
---   progress.
+--   progress, no XP reward, and no originating NPC. Callers that
+--   want a reward or a giver set the fields after construction.
 mkQuest :: String -> QuestGoal -> Quest
 mkQuest name goal = Quest
   { qName     = name
   , qGoal     = goal
   , qProgress = 0
   , qStatus   = QuestActive
+  , qReward   = 0
+  , qGiver    = Nothing
   }
 
--- | Absorbing test for completed quests.
+-- | Absorbing test for completed (i.e., turned-in) quests.
 isCompleted :: Quest -> Bool
 isCompleted q = qStatus q == QuestCompleted
 
@@ -87,24 +109,34 @@ isCompleted q = qStatus q == QuestCompleted
 isFailed :: Quest -> Bool
 isFailed q = qStatus q == QuestFailed
 
+-- | Test for a quest whose goal has been met but which hasn't yet
+--   been turned in at an NPC. Distinct from 'isCompleted': a ready
+--   quest has no reward collected yet.
+isReady :: Quest -> Bool
+isReady q = qStatus q == QuestReadyToTurnIn
+
 -- | Advance a quest by one event. Only quests in 'QuestActive' are
 --   affected — 'QuestNotStarted' quests (offered but not yet
---   accepted) silently ignore events, and terminal statuses
---   ('Completed' and 'Failed') are absorbing. Events that are
---   irrelevant to an active quest's goal are also ignored. Progress
---   is monotonic (never decreases) and a quest transitions to
---   'QuestCompleted' the moment its progress reaches its target.
+--   accepted) silently ignore events, 'QuestReadyToTurnIn' is
+--   absorbing w.r.t. 'advanceQuest' (the player still has to
+--   hand it in, but the world can't push its progress further),
+--   and terminal statuses ('Completed' and 'Failed') are also
+--   absorbing. Events that are irrelevant to an active quest's
+--   goal are ignored. Progress is monotonic (never decreases) and
+--   a quest transitions to 'QuestReadyToTurnIn' the moment its
+--   progress reaches its target — the 'QuestCompleted' transition
+--   happens in the GameState layer when the reward is collected.
 advanceQuest :: QuestEvent -> Quest -> Quest
 advanceQuest _ q
   | qStatus q /= QuestActive = q
 advanceQuest ev q = case (qGoal q, ev) of
   (GoalKillMonsters target, EvKilledMonster) ->
     let progress' = qProgress q + 1
-        status'   = if progress' >= target then QuestCompleted else QuestActive
+        status'   = if progress' >= target then QuestReadyToTurnIn else QuestActive
     in q { qProgress = progress', qStatus = status' }
   (GoalReachDepth target, EvEnteredDepth d) ->
     let progress' = max (qProgress q) d
-        status'   = if progress' >= target then QuestCompleted else QuestActive
+        status'   = if progress' >= target then QuestReadyToTurnIn else QuestActive
     in q { qProgress = progress', qStatus = status' }
   _ -> q
 
@@ -120,12 +152,14 @@ questDescription q = case qGoal q of
   GoalKillMonsters target -> "Kill " ++ show target ++ " monsters."
   GoalReachDepth   target -> "Reach depth " ++ show target ++ "."
 
--- | Short progress label for the status panel, e.g. @"3/5"@ or
---   @"done"@ for completed quests.
+-- | Short progress label for the status panel, e.g. @"3/5"@,
+--   @"ready!"@ for quests waiting to be turned in, or @"done"@ for
+--   fully-completed ones.
 questProgressLabel :: Quest -> String
 questProgressLabel q
-  | isCompleted q = "done"
-  | isFailed    q = "failed"
+  | isCompleted q          = "done"
+  | isFailed    q          = "failed"
+  | qStatus q == QuestReadyToTurnIn = "ready!"
   | otherwise = case qGoal q of
       GoalKillMonsters target -> show (min (qProgress q) target) ++ "/" ++ show target
       GoalReachDepth   target -> show (min (qProgress q) target) ++ "/" ++ show target

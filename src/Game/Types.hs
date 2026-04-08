@@ -156,6 +156,7 @@ data GameEvent
   | EvPlayerHurt     -- ^ a monster hit the player
   | EvPlayerDied     -- ^ a monster dealt the killing blow
   | EvLevelUp        -- ^ player gained an experience level
+  | EvQuestTurnedIn  -- ^ a ready quest was handed in for reward
   deriving (Eq, Show)
 
 ------------------------------------------------------------

@@ -38,13 +38,14 @@ drawGame gs =
         , drawStatus gs
         , drawQuests gs
         , drawMessages gs
-        , str "Move: arrows/hjkl/yubn  Wait: .  Get: g  Inv: i  Quests: Q  Cmd: /  Quit: q/Esc"
+        , str "? for help    q/Esc to quit"
         ]
   in case gsDialogue gs of
        Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
-         [drawDialogueModal npc, baseLayer]
+         [drawDialogueModal (gsQuests gs) i npc, baseLayer]
        _
          | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
+         | gsHelpOpen     gs  -> [drawHelpModal, baseLayer]
          | gsQuestLogOpen gs  -> [drawQuestLogModal gs, baseLayer]
          | gsInventoryOpen gs -> [drawInventoryModal gs, baseLayer]
          | otherwise          -> [baseLayer]
@@ -174,31 +175,52 @@ drawInventoryModal gs =
       body = vBox $ map str (header ++ bagLines ++ footer)
   in centerLayer $ borderWithLabel (str " Inventory ") $ padAll 1 body
 
--- | Centered modal showing an NPC's greeting and the list of
---   quests they currently have to offer. Letter keys @a@..@z@
---   accept the corresponding offer; @Esc@ closes the modal
---   without accepting anything (which leaves the offers on the
---   NPC so the player can come back later).
-drawDialogueModal :: NPC -> Widget ()
-drawDialogueModal npc =
-  let header =
+-- | Centered modal showing an NPC's greeting, any quests the
+--   player is ready to turn in here, and the list of quests this
+--   NPC currently has to offer.
+--
+--   * Capital letters @A@..@Z@ hand in a ready quest — a @*@ next
+--     to the entry means this NPC is the original giver and will
+--     pay the full bounty; no @*@ means they'll pay half.
+--   * Lowercase letters @a@..@z@ accept a new offer.
+--   * @Esc@ closes without any choice, leaving both lists intact.
+drawDialogueModal :: [Quest] -> Int -> NPC -> Widget ()
+drawDialogueModal quests npcIdx npc =
+  let ready = [ q | q <- quests, qStatus q == QuestReadyToTurnIn ]
+      header =
         [ "\"" ++ npcGreeting npc ++ "\""
         , ""
-        , "Quests on offer:"
         ]
-      offerLines = case npcOffers npc of
-        [] -> ["  (none — you've taken them all)"]
+      readySection = case ready of
+        [] -> []
         xs ->
-          [ "  " ++ [letter] ++ ") " ++ qName q ++ " — " ++ questDescription q
-          | (letter, q) <- zip ['a' ..] xs
-          ]
+          "Ready to turn in:" :
+          [ "  " ++ [letter] ++ marker ++ ") "
+              ++ qName q ++ " — " ++ rewardNote q
+          | (letter, q) <- zip ['A' ..] xs
+          , let marker = if qGiver q == Just npcIdx then "*" else " "
+          ] ++ [""]
+      offerSection =
+        "Quests on offer:" :
+        case npcOffers npc of
+          [] -> ["  (none — you've taken them all)"]
+          xs ->
+            [ "  " ++ [letter] ++ ") " ++ qName q ++ " — " ++ questDescription q
+            | (letter, q) <- zip ['a' ..] xs
+            ]
       footer =
         [ ""
-        , "[letter] accept   Esc close"
+        , "[A-Z] hand in  [a-z] accept  Esc close"
         ]
-      body = vBox $ map str (header ++ offerLines ++ footer)
+      body = vBox $ map str (header ++ readySection ++ offerSection ++ footer)
       label = " " ++ npcName npc ++ " "
   in centerLayer $ borderWithLabel (str label) $ padAll 1 body
+  where
+    rewardNote q
+      | qGiver q == Just npcIdx =
+          "full reward " ++ show (qReward q) ++ " XP"
+      | otherwise =
+          "partial reward " ++ show (qReward q `div` 2) ++ " XP"
 
 -- | Full quest journal. Shows Active, Completed, and Failed
 --   sections. Active quests are labeled @a@..@z@; pressing a
@@ -259,3 +281,61 @@ drawQuitConfirmModal =
         , str "  y : yes, quit"
         , str "  n / Esc : keep playing"
         ]
+
+-- | A reference sheet for every key binding, modal, and slash
+--   command the game currently understands. Opened with @?@ and
+--   closed with any key. Mirrors the organization of the three
+--   input layers (normal, modal, prompt) so the player can find
+--   what they want by context rather than by alphabetical order.
+drawHelpModal :: Widget ()
+drawHelpModal =
+  let section title rows = (title ++ ":") : rows ++ [""]
+      lines_ =
+           section "Movement"
+             [ "  arrow keys / hjkl    move 4-way"
+             , "  y u b n              move diagonally"
+             , "  .                    wait a turn"
+             ]
+        ++ section "World actions"
+             [ "  g                    pick up item here"
+             , "  >                    descend stairs"
+             , "  <                    ascend stairs"
+             ]
+        ++ section "Modals"
+             [ "  i                    inventory"
+             , "  Q                    quest log"
+             , "  ?                    this help screen"
+             , "  Esc                  close any open modal"
+             ]
+        ++ section "Dialogue (NPCs)"
+             [ "  bump an NPC          open dialogue"
+             , "  a-z                  accept offered quest"
+             , "  A-Z                  hand in a ready quest"
+             , "  Esc                  close without choosing"
+             ]
+        ++ section "Quest log (Q)"
+             [ "  a-z                  select an active quest"
+             , "  x                    abandon the selected quest"
+             , "  Esc / Q              close the log"
+             ]
+        ++ section "Inventory (i)"
+             [ "  a-z                  use / equip the item"
+             , "  Esc / i              close the bag"
+             ]
+        ++ section "Slash commands (wizard / debug)"
+             [ "  /                    open the command prompt"
+             , "  /reveal              light up the entire map"
+             , "  /heal                full HP restore"
+             , "  /kill-all            banish every monster on level"
+             , "  /teleport X Y        jump to a tile"
+             , "  /spawn KIND          spawn rat/goblin/orc next to you"
+             , "  /xp N                grant N XP"
+             , "  /descend  /ascend    force-move one floor"
+             ]
+        ++ section "Quitting"
+             [ "  q / Esc              open quit confirmation"
+             , "  y                    confirm and exit the run"
+             , "  n / Esc / any        cancel and keep playing"
+             ]
+        ++ [ "(press any key to close)" ]
+  in centerLayer $ borderWithLabel (str " Help ") $ padAll 1 $ vBox (map str lines_)

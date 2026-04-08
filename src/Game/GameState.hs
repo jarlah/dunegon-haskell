@@ -11,6 +11,7 @@ module Game.GameState
   , applyCommand
   , acceptQuestFromNPC
   , abandonQuest
+  , turnInQuest
   , fovRadius
   ) where
 
@@ -35,7 +36,7 @@ import qualified Game.Logic.Movement as M
 import qualified Game.Logic.Progression as P
 import Game.Logic.Quest
   ( Quest(..), QuestEvent(..), QuestGoal(..), QuestStatus(..)
-  , advanceAll, isCompleted, mkQuest
+  , advanceAll, isReady, mkQuest
   )
 
 -- | Pure snapshot of the whole game world.
@@ -103,6 +104,10 @@ data GameState = GameState
     -- ^ is the quit-confirmation modal currently open? Set when
     --   the player presses @q@ / @Esc@ in normal mode so a
     --   fat-fingered quit key doesn't immediately end the run.
+  , gsHelpOpen    :: !Bool
+    -- ^ is the help modal currently open? The help modal lists
+    --   every keybinding and slash command so the player doesn't
+    --   have to remember them or scroll back through the README.
   , gsLevels      :: !(Map Int ParkedLevel)
     -- ^ previously-visited dungeon levels, keyed by their depth.
     --   The *current* level is always in 'gsLevel' and friends —
@@ -183,6 +188,7 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsQuestLogOpen   = False
   , gsQuestLogCursor = Nothing
   , gsConfirmQuit    = False
+  , gsHelpOpen       = False
   , gsLevels      = Map.empty
   }
 
@@ -232,8 +238,8 @@ spawnNPCs gen depth rooms
               , npcPos      = p
               , npcGreeting = "Greetings, traveler. I have work for those willing."
               , npcOffers   =
-                  [ mkOffer "Slayer" (GoalKillMonsters 5)
-                  , mkOffer "Delve"  (GoalReachDepth 3)
+                  [ (mkOffer "Slayer" (GoalKillMonsters 5)) { qReward = 50 }
+                  , (mkOffer "Delve"  (GoalReachDepth 3))   { qReward = 75 }
                   ]
               }
         in ([questMaster], gen')
@@ -475,15 +481,18 @@ fireQuestEvent :: QuestEvent -> GameState -> GameState
 fireQuestEvent ev gs =
   let before      = gsQuests gs
       after       = advanceAll ev before
-      -- Pair old and new by position; a quest "just completed" if
-      -- it wasn't completed before and is now.
-      newlyDone   =
+      -- Pair old and new by position; a quest "just became ready"
+      -- if it wasn't ready before and is now. Under M12 goal-met
+      -- quests flip to 'QuestReadyToTurnIn' (not 'QuestCompleted')
+      -- so this is the right place to tell the player their quest
+      -- is waiting on a turn-in.
+      newlyReady  =
         [ qName q'
         | (q, q') <- zip before after
-        , not (isCompleted q)
-        , isCompleted q'
+        , not (isReady q)
+        , isReady q'
         ]
-      msgs = [ "Quest complete: " ++ n ++ "!" | n <- newlyDone ]
+      msgs = [ "Quest ready to turn in: " ++ n ++ "!" | n <- newlyReady ]
   in gs { gsQuests   = after
         , gsMessages = reverse msgs ++ gsMessages gs
         }
@@ -554,10 +563,10 @@ abandonQuest activeIdx gs =
 
 -- | Accept the quest at the given offer index from the NPC at the
 --   given NPC index. Moves the quest from the NPC's offer list
---   into 'gsQuests' with its status flipped to 'QuestActive', and
---   prepends a confirmation message. If either index is out of
---   range the call is a no-op (defensive; Main shouldn't produce
---   bad indices but we guard against it).
+--   into 'gsQuests' with its status flipped to 'QuestActive' and
+--   its 'qGiver' stamped with the NPC index (so turn-in at that
+--   same NPC pays full bounty later). Prepends a confirmation
+--   message. If either index is out of range the call is a no-op.
 acceptQuestFromNPC :: Int -> Int -> GameState -> GameState
 acceptQuestFromNPC npcIdx offerIdx gs =
   case safeIndex npcIdx (gsNPCs gs) of
@@ -565,7 +574,7 @@ acceptQuestFromNPC npcIdx offerIdx gs =
     Just npc -> case safeIndex offerIdx (npcOffers npc) of
       Nothing    -> gs
       Just offer ->
-        let accepted  = acceptOffer offer
+        let accepted  = (acceptOffer offer) { qGiver = Just npcIdx }
             npc'      = npc { npcOffers = removeAt offerIdx (npcOffers npc) }
             npcs'     = updateAt npcIdx (const npc') (gsNPCs gs)
             msg       = "You accept \"" ++ qName accepted ++ "\"."
@@ -573,6 +582,52 @@ acceptQuestFromNPC npcIdx offerIdx gs =
               , gsQuests   = gsQuests gs ++ [accepted]
               , gsMessages = msg : gsMessages gs
               }
+  where
+    safeIndex n xs
+      | n < 0 || n >= length xs = Nothing
+      | otherwise               = Just (xs !! n)
+
+-- | Turn in a ready quest at an NPC. 'questIdx' indexes into the
+--   /ready-only/ sub-list of 'gsQuests' (so the dialogue can show
+--   only the ready quests without the caller having to remap
+--   indices). Preconditions: NPC exists, quest is
+--   'QuestReadyToTurnIn'. Full XP bounty when the NPC is the
+--   original giver ('qGiver' matches 'npcIdx'), otherwise half
+--   (integer division — a reward of 1 at a non-giver pays 0,
+--   intentionally: the design discourages tiny quests from being
+--   treated identically regardless of giver). Emits
+--   'EvQuestTurnedIn' and any 'EvLevelUp's the XP triggers.
+turnInQuest :: Int -> Int -> GameState -> GameState
+turnInQuest npcIdx readyIdx gs =
+  case safeIndex npcIdx (gsNPCs gs) of
+    Nothing  -> gs
+    Just _ ->
+      let ready = [ (i, q) | (i, q) <- zip [0 ..] (gsQuests gs)
+                           , qStatus q == QuestReadyToTurnIn ]
+      in case drop readyIdx ready of
+           []                 -> gs
+           ((realIdx, q) : _) ->
+             let fullReward = qReward q
+                 isOriginal = qGiver q == Just npcIdx
+                 awarded    = if isOriginal then fullReward else fullReward `div` 2
+                 (s', ups)  = P.gainXP (gsPlayerStats gs) awarded
+                 startLvl   = sLevel (gsPlayerStats gs)
+                 endLvl     = sLevel s'
+                 lvlMsgs    = [ "You reach level " ++ show l ++ "!"
+                              | l <- [endLvl, endLvl - 1 .. startLvl + 1] ]
+                 completed  = q { qStatus = QuestCompleted }
+                 quests'    = updateAt realIdx (const completed) (gsQuests gs)
+                 rewardMsg  = if isOriginal
+                   then "Quest complete: " ++ qName q ++ "! +" ++ show awarded ++ " XP."
+                   else "Quest complete: " ++ qName q ++ "! +" ++ show awarded
+                        ++ " XP (partial reward — not the original giver)."
+             in gs { gsPlayerStats = s'
+                   , gsQuests      = quests'
+                   , gsMessages    = lvlMsgs ++ [rewardMsg] ++ gsMessages gs
+                   , gsEvents      = gsEvents gs
+                                   ++ [EvQuestTurnedIn]
+                                   ++ replicate ups EvLevelUp
+                   }
   where
     safeIndex n xs
       | n < 0 || n >= length xs = Nothing

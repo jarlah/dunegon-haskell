@@ -42,11 +42,15 @@ spec = describe "Game.Logic.Quest" $ do
       qProgress q2 `shouldBe` 2
       qStatus   q2 `shouldBe` QuestActive
 
-    it "completes a kill quest when the target is reached" $ do
+    it "flips a kill quest to ready-to-turn-in when the target is reached" $ do
       let q0 = fresh (GoalKillMonsters 2)
           q1 = advanceQuest EvKilledMonster q0
           q2 = advanceQuest EvKilledMonster q1
-      isCompleted q2 `shouldBe` True
+      -- Goal-met quests now wait on a turn-in instead of going
+      -- straight to Completed. The GameState layer flips them to
+      -- QuestCompleted when the player hands them in at an NPC.
+      isReady     q2 `shouldBe` True
+      isCompleted q2 `shouldBe` False
 
     it "ignores depth events on a kill quest" $ do
       let q0 = fresh (GoalKillMonsters 3)
@@ -61,16 +65,16 @@ spec = describe "Game.Logic.Quest" $ do
       qProgress q3 `shouldBe` 4
       qStatus   q3 `shouldBe` QuestActive
 
-    it "completes a depth quest on reaching the target" $ do
+    it "flips a depth quest to ready-to-turn-in on reaching the target" $ do
       let q0 = fresh (GoalReachDepth 3)
           q1 = advanceQuest (EvEnteredDepth 3) q0
-      isCompleted q1 `shouldBe` True
+      isReady q1 `shouldBe` True
 
-    it "overshooting a depth quest still completes without going backwards" $ do
+    it "overshooting a depth quest still flips to ready without going backwards" $ do
       let q0 = fresh (GoalReachDepth 3)
           q1 = advanceQuest (EvEnteredDepth 7) q0
-      isCompleted q1 `shouldBe` True
-      qProgress   q1 `shouldBe` 7
+      isReady   q1 `shouldBe` True
+      qProgress q1 `shouldBe` 7
 
   describe "advanceAll" $ do
     it "applies the same event to every quest in a list" $ do
@@ -78,7 +82,9 @@ spec = describe "Game.Logic.Quest" $ do
                 , fresh (GoalReachDepth 1)
                 ]
           qs' = advanceAll EvKilledMonster qs
-      map isCompleted qs' `shouldBe` [True, False]
+      -- Only the kill quest reacts to EvKilledMonster. After one
+      -- kill it's ready to turn in; the depth quest is untouched.
+      map qStatus qs' `shouldBe` [QuestReadyToTurnIn, QuestActive]
 
   describe "QuestNotStarted (un-accepted offers)" $ do
     it "does not advance a kill quest that hasn't been accepted yet" $ do
@@ -98,10 +104,18 @@ spec = describe "Game.Logic.Quest" $ do
       qStatus   after `shouldBe` QuestNotStarted
 
   describe "terminal absorption" $ do
+    it "prop: a ready quest stays ready under any further event" $
+      -- Goal-met but not yet turned in: the world can't push a
+      -- ready quest further (no over-completing, no re-arming).
+      property $ \(goal :: QuestGoal) (ev :: QuestEvent) ->
+        let q0 = forceReady (fresh goal)
+            q1 = advanceQuest ev q0
+        in qStatus q1 == QuestReadyToTurnIn
+
     it "prop: a completed quest stays completed under any further event" $
       property $ \(goal :: QuestGoal) (ev :: QuestEvent) ->
-        let q0  = forceComplete (fresh goal)
-            q1  = advanceQuest ev q0
+        let q0 = (fresh goal) { qStatus = QuestCompleted }
+            q1 = advanceQuest ev q0
         in qStatus q1 == QuestCompleted
 
     it "prop: a failed quest stays failed under any further event" $
@@ -109,6 +123,14 @@ spec = describe "Game.Logic.Quest" $ do
         let q0 = (fresh goal) { qStatus = QuestFailed }
             q1 = advanceQuest ev q0
         in qStatus q1 == QuestFailed
+
+    it "further kills after a ready kill quest don't bump progress" $ do
+      let q0 = fresh (GoalKillMonsters 2)
+          q1 = advanceQuest EvKilledMonster q0
+          q2 = advanceQuest EvKilledMonster q1   -- reaches target, flips ready
+          q3 = advanceQuest EvKilledMonster q2   -- post-ready, should be no-op
+      qProgress q3 `shouldBe` 2
+      qStatus   q3 `shouldBe` QuestReadyToTurnIn
 
   describe "monotonicity" $ do
     it "prop: progress never decreases after an event" $
@@ -124,11 +146,11 @@ spec = describe "Game.Logic.Quest" $ do
             q1 = advanceQuest (EvEnteredDepth d) q0
         in qProgress q1 == qProgress q0
 
--- | Fire events until the quest completes. Assumes the goal is
---   reachable (which the generator guarantees — kill / depth
---   targets are ≥ 1).
-forceComplete :: Quest -> Quest
-forceComplete q = case qGoal q of
+-- | Fire events until the quest flips to QuestReadyToTurnIn
+--   (i.e., its goal has been met). Assumes the goal is reachable
+--   (which the generator guarantees — kill / depth targets ≥ 1).
+forceReady :: Quest -> Quest
+forceReady q = case qGoal q of
   GoalKillMonsters n ->
     iterate (advanceQuest EvKilledMonster) q !! n
   GoalReachDepth   n ->
