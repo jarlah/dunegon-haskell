@@ -87,14 +87,16 @@ isCompleted q = qStatus q == QuestCompleted
 isFailed :: Quest -> Bool
 isFailed q = qStatus q == QuestFailed
 
--- | Advance a quest by one event. Terminal statuses ('Completed'
---   and 'Failed') are absorbing — events never move them. Events
---   that are irrelevant to a quest's goal are ignored. Progress is
---   monotonic (never decreases) and a quest transitions to
+-- | Advance a quest by one event. Only quests in 'QuestActive' are
+--   affected — 'QuestNotStarted' quests (offered but not yet
+--   accepted) silently ignore events, and terminal statuses
+--   ('Completed' and 'Failed') are absorbing. Events that are
+--   irrelevant to an active quest's goal are also ignored. Progress
+--   is monotonic (never decreases) and a quest transitions to
 --   'QuestCompleted' the moment its progress reaches its target.
 advanceQuest :: QuestEvent -> Quest -> Quest
 advanceQuest _ q
-  | qStatus q == QuestCompleted || qStatus q == QuestFailed = q
+  | qStatus q /= QuestActive = q
 advanceQuest ev q = case (qGoal q, ev) of
   (GoalKillMonsters target, EvKilledMonster) ->
     let progress' = qProgress q + 1

@@ -80,6 +80,23 @@ spec = describe "Game.Logic.Quest" $ do
           qs' = advanceAll EvKilledMonster qs
       map isCompleted qs' `shouldBe` [True, False]
 
+  describe "QuestNotStarted (un-accepted offers)" $ do
+    it "does not advance a kill quest that hasn't been accepted yet" $ do
+      let offer = (fresh (GoalKillMonsters 3)) { qStatus = QuestNotStarted }
+          after = advanceQuest EvKilledMonster offer
+      -- Progress does not move, status stays NotStarted.
+      -- (The existing advanceQuest only advances QuestActive / matching
+      -- goals; this test pins down the un-accepted behavior so M10 can
+      -- rely on it.)
+      qProgress after `shouldBe` 0
+      qStatus   after `shouldBe` QuestNotStarted
+
+    it "does not advance a depth quest that hasn't been accepted yet" $ do
+      let offer = (fresh (GoalReachDepth 3)) { qStatus = QuestNotStarted }
+          after = advanceQuest (EvEnteredDepth 5) offer
+      qProgress after `shouldBe` 0
+      qStatus   after `shouldBe` QuestNotStarted
+
   describe "terminal absorption" $ do
     it "prop: a completed quest stays completed under any further event" $
       property $ \(goal :: QuestGoal) (ev :: QuestEvent) ->

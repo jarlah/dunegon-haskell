@@ -1,6 +1,7 @@
 module Game.Render
   ( drawGame
   , fogAttr
+  , npcAttr
   ) where
 
 import Brick
@@ -14,13 +15,19 @@ import Linear (V2(..))
 import Game.GameState
 import qualified Game.Logic.Inventory as Inv
 import Game.Logic.Progression (xpForNextLevel)
-import Game.Logic.Quest (Quest(..), questProgressLabel)
+import Game.Logic.Quest (Quest(..), questDescription, questProgressLabel)
 import Game.Types
 
 -- | Attribute name used for "explored but not currently visible"
 --   tiles. Main wires this to a dim color in its 'attrMap'.
 fogAttr :: AttrName
 fogAttr = attrName "fog"
+
+-- | Attribute name used for NPC glyphs on the map. Main wires this
+--   to a yellow foreground so NPCs read as friendly and stand out
+--   from monsters.
+npcAttr :: AttrName
+npcAttr = attrName "npc"
 
 drawGame :: GameState -> [Widget ()]
 drawGame gs =
@@ -32,9 +39,16 @@ drawGame gs =
         , drawMessages gs
         , str "Move: arrows / hjkl / yubn   Wait: .   Get: g   Inv: i   Cmd: /   Quit: q / Esc"
         ]
-  in if gsInventoryOpen gs
-       then [drawInventoryModal gs, baseLayer]
-       else [baseLayer]
+  in case gsDialogue gs of
+       Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
+         [drawDialogueModal npc, baseLayer]
+       _
+         | gsInventoryOpen gs -> [drawInventoryModal gs, baseLayer]
+         | otherwise          -> [baseLayer]
+  where
+    nthMaybe n xs
+      | n < 0 || n >= length xs = Nothing
+      | otherwise               = Just (xs !! n)
 
 -- | The line between the map and the status bar. When the
 --   slash-command prompt is closed it's a blank spacer that holds
@@ -66,22 +80,26 @@ drawGrid gs =
 drawCell :: GameState -> Set Pos -> Set Pos -> Pos -> Widget ()
 drawCell gs vis exp_ pos
   | pos `Set.member` vis =
-      str [visibleGlyph gs pos]
+      visibleCell gs pos
   | pos `Set.member` exp_ =
       withAttr fogAttr $ str [tileGlyph (gsLevel gs) pos]
   | otherwise =
       str " "
 
--- | Glyph for a visible tile. Priority from top to bottom:
---   player, monster, item on floor, terrain.
-visibleGlyph :: GameState -> Pos -> Char
-visibleGlyph gs pos
-  | pos == gsPlayerPos gs = '@'
-  | otherwise = case find (\m -> mPos m == pos) (gsMonsters gs) of
-      Just m  -> monsterGlyph (mKind m)
-      Nothing -> case find (\(p, _) -> p == pos) (gsItemsOnFloor gs) of
-        Just (_, it) -> itemGlyph it
-        Nothing      -> tileGlyph (gsLevel gs) pos
+-- | Render the cell at a visible position, with its glyph and (if
+--   applicable) attribute. Priority from top to bottom: player,
+--   monster, NPC, item on floor, terrain.
+visibleCell :: GameState -> Pos -> Widget ()
+visibleCell gs pos
+  | pos == gsPlayerPos gs = str "@"
+  | Just m <- find (\mo -> mPos mo == pos) (gsMonsters gs) =
+      str [monsterGlyph (mKind m)]
+  | Just _ <- find (\n -> npcPos n == pos) (gsNPCs gs) =
+      withAttr npcAttr $ str "N"
+  | Just (_, it) <- find (\(p, _) -> p == pos) (gsItemsOnFloor gs) =
+      str [itemGlyph it]
+  | otherwise =
+      str [tileGlyph (gsLevel gs) pos]
 
 -- | Glyph for the terrain at a position, without the player or
 --   monsters overlaid. Used for both visible and fogged rendering.
@@ -152,3 +170,29 @@ drawInventoryModal gs =
         ]
       body = vBox $ map str (header ++ bagLines ++ footer)
   in centerLayer $ borderWithLabel (str " Inventory ") $ padAll 1 body
+
+-- | Centered modal showing an NPC's greeting and the list of
+--   quests they currently have to offer. Letter keys @a@..@z@
+--   accept the corresponding offer; @Esc@ closes the modal
+--   without accepting anything (which leaves the offers on the
+--   NPC so the player can come back later).
+drawDialogueModal :: NPC -> Widget ()
+drawDialogueModal npc =
+  let header =
+        [ "\"" ++ npcGreeting npc ++ "\""
+        , ""
+        , "Quests on offer:"
+        ]
+      offerLines = case npcOffers npc of
+        [] -> ["  (none — you've taken them all)"]
+        xs ->
+          [ "  " ++ [letter] ++ ") " ++ qName q ++ " — " ++ questDescription q
+          | (letter, q) <- zip ['a' ..] xs
+          ]
+      footer =
+        [ ""
+        , "[letter] accept   Esc close"
+        ]
+      body = vBox $ map str (header ++ offerLines ++ footer)
+      label = " " ++ npcName npc ++ " "
+  in centerLayer $ borderWithLabel (str label) $ padAll 1 body

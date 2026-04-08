@@ -14,7 +14,7 @@ import Game.GameState
 import Game.Input (handleKey)
 import Game.Logic.Command (parseCommand)
 import Game.Logic.Dungeon (defaultLevelConfig)
-import Game.Render (drawGame, fogAttr)
+import Game.Render (drawGame, fogAttr, npcAttr)
 import Game.Types (GameAction(..), Inventory(..))
 
 -- | Build the Brick 'App' with audio closed into the event handler.
@@ -27,6 +27,7 @@ mkApp mAudio = App
   , appStartEvent   = pure ()
   , appAttrMap      = const $ attrMap V.defAttr
       [ (fogAttr, fg V.brightBlack)
+      , (npcAttr, fg V.yellow)
       ]
   }
 
@@ -35,9 +36,39 @@ handleEvent mAudio (VtyEvent (V.EvKey key mods)) = do
   gs <- get
   case () of
     _ | Just buf <- gsPrompt gs     -> handlePromptKey key buf
+      | Just i   <- gsDialogue gs   -> handleDialogueKey i key
       | gsInventoryOpen gs          -> handleInventoryKey mAudio key
       | otherwise                   -> handleNormalKey mAudio key mods
 handleEvent _ _ = pure ()
+
+-- | Keystrokes while an NPC dialogue modal is open. Letters
+--   @a@..@z@ accept the offer at that index; 'Esc' closes the
+--   modal without accepting anything. Monsters do not act either
+--   way — peaceful conversation is a free action.
+handleDialogueKey :: Int -> V.Key -> EventM () GameState ()
+handleDialogueKey _ V.KEsc =
+  modify (\gs -> gs { gsDialogue = Nothing })
+handleDialogueKey npcIdx (V.KChar c)
+  | c >= 'a' && c <= 'z' = do
+      gs <- get
+      let offerIdx = ord c - ord 'a'
+          offers   = case drop npcIdx (gsNPCs gs) of
+            (n : _) -> npcOffers n
+            []      -> []
+      if offerIdx < length offers
+        then do
+          modify (acceptQuestFromNPC npcIdx offerIdx)
+          -- If this was the last offer, auto-close the dialogue
+          -- so the player doesn't stare at an empty quest list.
+          gs' <- get
+          let stillOffering = case drop npcIdx (gsNPCs gs') of
+                (n : _) -> not (null (npcOffers n))
+                []      -> False
+          if stillOffering
+            then pure ()
+            else modify (\s -> s { gsDialogue = Nothing })
+        else pure ()
+handleDialogueKey _ _ = pure ()
 
 -- | Keystrokes while the inventory modal is open. Letters @a@..@z@
 --   select the item at that index and apply its default action;

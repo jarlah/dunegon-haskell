@@ -12,6 +12,8 @@ import System.Random (mkStdGen)
 import Test.Hspec
 
 import Game.GameState
+import Game.Logic.Quest
+  ( Quest(..), QuestGoal(..), QuestStatus(..), mkQuest )
 import Game.Types
 
 -- | A tiny 5x5 open room with walls around the edge, so the player
@@ -46,6 +48,8 @@ mkFixture seed ppos pstats monsters = GameState
   , gsItemsOnFloor  = []
   , gsInventoryOpen = False
   , gsQuests        = []
+  , gsNPCs          = []
+  , gsDialogue      = Nothing
   , gsLevels        = mempty
   }
 
@@ -116,3 +120,60 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
     let gs  = mkFixture 99 (V2 2 2) overpoweredPlayer []
         gs' = applyAction Wait gs
     EvAttackHit `elem` gsEvents gs' `shouldBe` False
+
+  -- ----------------------------------------------------------------
+  -- M10: NPCs and dialogue
+  -- ----------------------------------------------------------------
+
+  it "bumping into an NPC opens dialogue and does not advance monsters" $ do
+    -- Player at (2,2); NPC at (2,1). Move N bumps the NPC.
+    -- A rat is placed non-adjacently so any monster activity would
+    -- be visible via gsMonsters changes (rat can't reach in one turn).
+    let npc = mkQuestMaster (V2 2 1)
+        rat = ratAt (V2 3 3)
+        gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [rat])
+                { gsNPCs = [npc] }
+        gs' = applyAction (Move N) gs
+    gsDialogue gs'  `shouldBe` Just 0
+    -- Monsters should NOT have acted — the event log is empty of
+    -- player-hurt events, and the rat is still at (3,3).
+    map mPos (gsMonsters gs') `shouldBe` [V2 3 3]
+
+  it "accepting a quest moves it from the NPC into gsQuests" $ do
+    let npc = mkQuestMaster (V2 2 1)
+        gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                { gsNPCs = [npc], gsDialogue = Just 0 }
+        gs' = acceptQuestFromNPC 0 0 gs
+    -- The offer list on the NPC shrinks by one.
+    length (npcOffers (head (gsNPCs gs'))) `shouldBe`
+      length (npcOffers npc) - 1
+    -- And the accepted quest lands in gsQuests with QuestActive status.
+    length (gsQuests gs') `shouldBe` 1
+    qStatus (head (gsQuests gs')) `shouldBe` QuestActive
+
+  it "a killed monster advances an accepted NPC quest" $ do
+    -- Accept a kill-1-monster quest, then kill a rat adjacent to
+    -- the player. Quest should flip to completed.
+    let offer       = (mkQuest "Tiny Slayer" (GoalKillMonsters 1))
+                        { qStatus = QuestNotStarted }
+        npc         = (mkQuestMaster (V2 0 0)) { npcOffers = [offer] }
+        rat         = ratAt (V2 2 1)
+        gs0         = (mkFixture 3 (V2 2 2) overpoweredPlayer [rat])
+                        { gsNPCs = [npc] }
+        gs1         = acceptQuestFromNPC 0 0 gs0
+        gs2         = applyAction (Move N) gs1     -- kill the rat
+    length (gsQuests gs2) `shouldBe` 1
+    qStatus (head (gsQuests gs2)) `shouldBe` QuestCompleted
+
+-- | Build a test NPC with two starter offers, placed at the
+--   given position.
+mkQuestMaster :: Pos -> NPC
+mkQuestMaster p = NPC
+  { npcName     = "Quest Master"
+  , npcPos      = p
+  , npcGreeting = "Hello."
+  , npcOffers   =
+      [ (mkQuest "Slayer" (GoalKillMonsters 5)) { qStatus = QuestNotStarted }
+      , (mkQuest "Delve"  (GoalReachDepth   3)) { qStatus = QuestNotStarted }
+      ]
+  }

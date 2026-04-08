@@ -1,6 +1,7 @@
 module Game.GameState
   ( GameState(..)
   , ParkedLevel(..)
+  , NPC(..)
   , mkGameState
   , newGame
   , defaultPlayerStats
@@ -8,6 +9,7 @@ module Game.GameState
   , hardcodedInitialState
   , applyAction
   , applyCommand
+  , acceptQuestFromNPC
   , fovRadius
   ) where
 
@@ -31,7 +33,7 @@ import Game.Logic.MonsterAI (MonsterIntent(..), monsterIntent)
 import qualified Game.Logic.Movement as M
 import qualified Game.Logic.Progression as P
 import Game.Logic.Quest
-  ( Quest(..), QuestEvent(..), QuestGoal(..)
+  ( Quest(..), QuestEvent(..), QuestGoal(..), QuestStatus(..)
   , advanceAll, isCompleted, mkQuest
   )
 
@@ -70,11 +72,23 @@ data GameState = GameState
     -- ^ is the inventory modal currently open? Input routes through
     --   the modal handler when true.
   , gsQuests      :: ![Quest]
-    -- ^ active quests. The list is small (2–3 in the MVP) and we
-    --   advance every quest with every event, so a flat list is
-    --   fine. Completed/Failed quests stay in the list so the quest
-    --   panel can show their final state; 'advanceQuest' treats
-    --   terminal statuses as absorbing.
+    -- ^ quests the player has accepted. The list is small (2–3
+    --   in the MVP) and we advance every quest with every event,
+    --   so a flat list is fine. Completed/Failed quests stay in
+    --   the list so the quest panel can show their final state;
+    --   'advanceQuest' treats terminal statuses as absorbing.
+    --
+    --   Note: only *accepted* quests live here. Quests offered by
+    --   NPCs but not yet accepted live on the NPC in 'gsNPCs'.
+  , gsNPCs        :: ![NPC]
+    -- ^ friendly non-combat entities on the current level. NPCs
+    --   don't move, don't take turns, and bumping into them opens
+    --   a dialogue modal instead of attacking.
+  , gsDialogue    :: !(Maybe Int)
+    -- ^ index into 'gsNPCs' of the NPC the player is currently
+    --   talking to, or 'Nothing' when no dialogue is open. When
+    --   this is 'Just', input routes through the dialogue handler
+    --   and monsters do not act.
   , gsLevels      :: !(Map Int ParkedLevel)
     -- ^ previously-visited dungeon levels, keyed by their depth.
     --   The *current* level is always in 'gsLevel' and friends —
@@ -96,6 +110,24 @@ data ParkedLevel = ParkedLevel
   , plExplored  :: !(Set Pos)
   , plPlayerPos :: !Pos
   } deriving (Show)
+
+-- | A friendly non-combat entity sitting on the dungeon floor.
+--   NPCs give out quests via a dialogue modal. They don't take
+--   turns, don't move, and can't be attacked — bumping into them
+--   opens dialogue instead.
+data NPC = NPC
+  { npcName     :: !String
+    -- ^ display name shown in the dialogue header
+  , npcPos      :: !Pos
+  , npcGreeting :: !String
+    -- ^ one-line flavor text shown at the top of the dialogue
+  , npcOffers   :: ![Quest]
+    -- ^ quests the NPC has to give. Each entry has status
+    --   'QuestNotStarted'; accepting a quest removes it from this
+    --   list and moves it into 'gsQuests' with status
+    --   'QuestActive'. Rejecting (Esc-ing out of dialogue) leaves
+    --   it here so the player can come back later.
+  } deriving (Eq, Show)
 
 -- | How far the player can see, in tiles. Measured in Euclidean
 --   distance; 8 feels right for a 60×20 dungeon.
@@ -131,19 +163,22 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsInventory   = emptyInventory
   , gsItemsOnFloor = []
   , gsInventoryOpen = False
-  , gsQuests      = starterQuests
+  , gsQuests      = []
+  , gsNPCs        = []
+  , gsDialogue    = Nothing
   , gsLevels      = Map.empty
   }
 
--- | The MVP quest set handed out at the start of every new run.
---   Two tiny goals that cover the two event kinds the quest engine
---   understands, so the player sees progress from both kills and
---   stair descents.
-starterQuests :: [Quest]
-starterQuests =
-  [ mkQuest "Slayer" (GoalKillMonsters 5)
-  , mkQuest "Delve"  (GoalReachDepth 3)
-  ]
+-- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
+--   with status 'QuestNotStarted' so 'advanceQuest' will ignore it
+--   until the player accepts — at which point the status flips to
+--   'QuestActive' via 'acceptOffer'.
+mkOffer :: String -> QuestGoal -> Quest
+mkOffer name goal = (mkQuest name goal) { qStatus = QuestNotStarted }
+
+-- | Flip an offered quest into an accepted one.
+acceptOffer :: Quest -> Quest
+acceptOffer q = q { qStatus = QuestActive }
 
 -- | Refresh 'gsVisible' from the player's current position and fold
 --   the new FOV into 'gsExplored'. Called once at the end of every
@@ -162,7 +197,29 @@ newGame gen0 cfg =
       -- Don't spawn monsters in the player's starting room.
       spawnRooms       = drop 1 rooms
       (monsters, gen2) = spawnMonsters gen1 spawnRooms
-  in mkGameState gen2 dl startPos monsters
+      (npcs,     gen3) = spawnNPCs gen2 (D.lcDepth cfg) rooms
+  in (mkGameState gen3 dl startPos monsters) { gsNPCs = npcs }
+
+-- | Place NPCs for a freshly generated level. For the M10.1 MVP
+--   this only fires on depth 1 and drops a single "Quest Master"
+--   NPC in a non-starting room carrying the two MVP quests.
+spawnNPCs :: StdGen -> Int -> [D.Room] -> ([NPC], StdGen)
+spawnNPCs gen depth rooms
+  | depth /= 1 = ([], gen)
+  | otherwise  = case drop 1 rooms of
+      []        -> ([], gen)                 -- degenerate: only one room
+      (r : _)   ->
+        let (p, gen') = randomRoomPos r gen
+            questMaster = NPC
+              { npcName     = "Quest Master"
+              , npcPos      = p
+              , npcGreeting = "Greetings, traveler. I have work for those willing."
+              , npcOffers   =
+                  [ mkOffer "Slayer" (GoalKillMonsters 5)
+                  , mkOffer "Delve"  (GoalReachDepth 3)
+                  ]
+              }
+        in ([questMaster], gen')
 
 -- | Roll 0-2 monsters per candidate room and drop them in random spots.
 spawnMonsters :: StdGen -> [D.Room] -> ([Monster], StdGen)
@@ -379,10 +436,14 @@ applyAction act gs0 =
          let target = gsPlayerPos gs + dirToOffset dir
          in case monsterAt target (gsMonsters gs) of
               Just (i, m) -> processMonsters (playerAttack gs i m)
-              Nothing     ->
-                case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
-                  Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
-                  Nothing     -> gs  -- blocked; turn does not advance
+              Nothing     -> case npcAt target (gsNPCs gs) of
+                Just (i, _) ->
+                  -- Bump-to-talk: open dialogue, monsters do NOT act.
+                  playerTalk i gs
+                Nothing     ->
+                  case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
+                    Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
+                    Nothing     -> gs  -- blocked; turn does not advance
 
 -- | Append events to the running per-turn log.
 emit :: GameState -> [GameEvent] -> GameState
@@ -433,6 +494,51 @@ monsterAt p = go 0
     go i (m : rest)
       | mPos m == p = Just (i, m)
       | otherwise   = go (i + 1) rest
+
+-- | Index lookup mirroring 'monsterAt' but for NPCs.
+npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)
+npcAt p = go 0
+  where
+    go _ [] = Nothing
+    go i (n : rest)
+      | npcPos n == p = Just (i, n)
+      | otherwise     = go (i + 1) rest
+
+------------------------------------------------------------
+-- NPC dialogue
+------------------------------------------------------------
+
+-- | Open the dialogue modal with the NPC at the given index.
+--   Does not cost a turn and does not clear the event log (nothing
+--   new happened combat-wise).
+playerTalk :: Int -> GameState -> GameState
+playerTalk i gs = gs { gsDialogue = Just i }
+
+-- | Accept the quest at the given offer index from the NPC at the
+--   given NPC index. Moves the quest from the NPC's offer list
+--   into 'gsQuests' with its status flipped to 'QuestActive', and
+--   prepends a confirmation message. If either index is out of
+--   range the call is a no-op (defensive; Main shouldn't produce
+--   bad indices but we guard against it).
+acceptQuestFromNPC :: Int -> Int -> GameState -> GameState
+acceptQuestFromNPC npcIdx offerIdx gs =
+  case safeIndex npcIdx (gsNPCs gs) of
+    Nothing  -> gs
+    Just npc -> case safeIndex offerIdx (npcOffers npc) of
+      Nothing    -> gs
+      Just offer ->
+        let accepted  = acceptOffer offer
+            npc'      = npc { npcOffers = removeAt offerIdx (npcOffers npc) }
+            npcs'     = updateAt npcIdx (const npc') (gsNPCs gs)
+            msg       = "You accept \"" ++ qName accepted ++ "\"."
+        in gs { gsNPCs     = npcs'
+              , gsQuests   = gsQuests gs ++ [accepted]
+              , gsMessages = msg : gsMessages gs
+              }
+  where
+    safeIndex n xs
+      | n < 0 || n >= length xs = Nothing
+      | otherwise               = Just (xs !! n)
 
 playerAttack :: GameState -> Int -> Monster -> GameState
 playerAttack gs i m =
