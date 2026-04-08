@@ -5,6 +5,7 @@ import Data.List (find)
 import Linear (V2(..))
 
 import Game.GameState
+import Game.Logic.Progression (xpForNextLevel)
 import Game.Types
 
 drawGame :: GameState -> [Widget ()]
@@ -49,7 +50,9 @@ drawStatus :: GameState -> Widget ()
 drawStatus gs =
   let s      = gsPlayerStats gs
       dl     = gsLevel gs
-      status = "HP: "   ++ show (sHP s)     ++ "/" ++ show (sMaxHP s)
+      status = "LVL "   ++ show (sLevel s)
+            ++ "   XP: " ++ show (sXP s) ++ "/" ++ show (xpForNextLevel (sLevel s))
+            ++ "   HP: " ++ show (sHP s) ++ "/" ++ show (sMaxHP s)
             ++ "   ATK: " ++ show (sAttack s)
             ++ "   DEF: " ++ show (sDefense s)
             ++ "   Depth: " ++ show (dlDepth dl)

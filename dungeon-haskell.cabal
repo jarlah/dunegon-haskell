@@ -37,6 +37,7 @@ library
     Game.Logic.Dungeon
     Game.Logic.Combat
     Game.Logic.MonsterAI
+    Game.Logic.Progression
     Game.Render
     Game.Input
   build-depends:
@@ -70,6 +71,7 @@ test-suite dungeon-haskell-test
     Game.Logic.MovementSpec
     Game.Logic.DungeonSpec
     Game.Logic.CombatSpec
+    Game.Logic.ProgressionSpec
   build-depends:
     , dungeon-haskell
     , hspec

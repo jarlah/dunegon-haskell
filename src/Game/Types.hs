@@ -72,12 +72,18 @@ data GameAction
   deriving (Eq, Show)
 
 -- | Combat / survival stats, shared by player and monsters.
+--
+--   'sLevel' and 'sXP' are only meaningful for the player. Monsters
+--   always have level 1 / 0 XP; they never gain XP, but storing the
+--   fields here keeps the record uniform.
 data Stats = Stats
   { sHP      :: !Int
   , sMaxHP   :: !Int
   , sAttack  :: !Int
   , sDefense :: !Int
   , sSpeed   :: !Int
+  , sLevel   :: !Int
+  , sXP      :: !Int
   } deriving (Eq, Show)
 
 data MonsterKind = Rat | Goblin | Orc
@@ -85,9 +91,21 @@ data MonsterKind = Rat | Goblin | Orc
 
 -- | Baseline stats for a monster of the given kind.
 monsterStats :: MonsterKind -> Stats
-monsterStats Rat    = Stats  5  5 2 0 3
-monsterStats Goblin = Stats 10 10 4 1 4
-monsterStats Orc    = Stats 18 18 6 3 5
+monsterStats Rat    = baseStats  5 2 0 3
+monsterStats Goblin = baseStats 10 4 1 4
+monsterStats Orc    = baseStats 18 6 3 5
+
+-- | Helper: a level-1, zero-XP stat block from hp/atk/def/speed.
+baseStats :: Int -> Int -> Int -> Int -> Stats
+baseStats hp atk dfn spd = Stats
+  { sHP      = hp
+  , sMaxHP   = hp
+  , sAttack  = atk
+  , sDefense = dfn
+  , sSpeed   = spd
+  , sLevel   = 1
+  , sXP      = 0
+  }
 
 monsterGlyph :: MonsterKind -> Char
 monsterGlyph Rat    = 'r'

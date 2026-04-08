@@ -16,7 +16,11 @@ genLivingStats = do
   atk   <- choose (0, 30)
   dfn   <- choose (0, 30)
   spd   <- choose (1, 20)
-  pure (Stats hp maxHp atk dfn spd)
+  pure Stats
+    { sHP = hp, sMaxHP = maxHp
+    , sAttack = atk, sDefense = dfn, sSpeed = spd
+    , sLevel = 1, sXP = 0
+    }
 
 -- | Same as above but HP may be 0 (dead).
 genAnyStats :: Gen Stats
@@ -26,7 +30,11 @@ genAnyStats = do
   atk   <- choose (0, 30)
   dfn   <- choose (0, 30)
   spd   <- choose (1, 20)
-  pure (Stats hp maxHp atk dfn spd)
+  pure Stats
+    { sHP = hp, sMaxHP = maxHp
+    , sAttack = atk, sDefense = dfn, sSpeed = spd
+    , sLevel = 1, sXP = 0
+    }
 
 spec :: Spec
 spec = describe "Game.Logic.Combat" $ do

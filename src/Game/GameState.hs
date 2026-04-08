@@ -18,6 +18,7 @@ import Game.Logic.Combat (Damage(..))
 import qualified Game.Logic.Dungeon as D
 import Game.Logic.MonsterAI (MonsterIntent(..), monsterIntent)
 import qualified Game.Logic.Movement as M
+import qualified Game.Logic.Progression as P
 
 -- | Pure snapshot of the whole game world.
 data GameState = GameState
@@ -38,6 +39,8 @@ defaultPlayerStats = Stats
   , sAttack  = 6
   , sDefense = 2
   , sSpeed   = 10
+  , sLevel   = 1
+  , sXP      = 0
   }
 
 -- | Construct a 'GameState' from the given parts.
@@ -144,14 +147,29 @@ playerAttack gs i m =
   let (result, gen') = C.resolveAttack (gsRng gs) (gsPlayerStats gs) (mStats m)
       newMStats      = C.applyDamage (mStats m) (Damage (C.resultDamage result))
       msg            = C.describeAttack result (monsterName (mKind m))
-      monsters'      =
-        if C.isDead newMStats
+      killed         = C.isDead newMStats
+      (playerStats', levelMsgs) =
+        if killed
+          then
+            let reward     = P.xpReward (mKind m)
+                (s', _)    = P.gainXP (gsPlayerStats gs) reward
+                startLevel = sLevel (gsPlayerStats gs)
+                endLevel   = sLevel s'
+                -- newest first, so higher levels come first
+                msgs = [ "You reach level " ++ show l ++ "!"
+                       | l <- [endLevel, endLevel - 1 .. startLevel + 1]
+                       ]
+            in (s', msgs)
+          else (gsPlayerStats gs, [])
+      monsters' =
+        if killed
           then removeAt i (gsMonsters gs)
           else updateAt i (\mo -> mo { mStats = newMStats }) (gsMonsters gs)
   in gs
-       { gsMonsters = monsters'
-       , gsRng      = gen'
-       , gsMessages = msg : gsMessages gs
+       { gsMonsters    = monsters'
+       , gsPlayerStats = playerStats'
+       , gsRng         = gen'
+       , gsMessages    = levelMsgs ++ [msg] ++ gsMessages gs
        }
 
 ------------------------------------------------------------
