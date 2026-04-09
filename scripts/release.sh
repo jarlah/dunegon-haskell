@@ -253,6 +253,18 @@ playback. On Debian/Ubuntu: \`sudo apt install libsdl2-2.0-0\`. On
 Fedora: \`sudo dnf install SDL2\`. On Arch: \`sudo pacman -S sdl2\`.
 The game runs silently without it.
 
+**NixOS:** the binary is glibc-linked, so run it under
+\`nix-ld\`. Add the following to \`configuration.nix\` and rebuild:
+\`\`\`nix
+programs.nix-ld.enable = true;
+programs.nix-ld.libraries = with pkgs; [
+  SDL2
+  ncurses
+  zlib
+  gmp
+];
+\`\`\`
+
 Built from \`$(git rev-parse --short HEAD)\` inside a Debian Bookworm
 container for glibc portability."
 

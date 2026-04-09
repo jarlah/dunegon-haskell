@@ -6,7 +6,7 @@ Procedurally generated rooms, fog-of-war line-of-sight, turn-based
 combat, inventory, NPC quests, a 10-floor descent capped by a dragon
 boss fight, persistent saves, and background music. The game logic
 is a pure Haskell library with a thin [Brick](https://hackage.haskell.org/package/brick)
-rendering shell on top, and is covered by 140+ HSpec / QuickCheck
+rendering shell on top, and is covered by 290+ HSpec / QuickCheck
 tests.
 
 ```
@@ -81,6 +81,27 @@ incremental.
   `libsdl2-dev`; on macOS `brew install sdl2`)
 - A terminal that supports Unicode box-drawing and 256 colors
 
+#### Running a release tarball on NixOS
+
+The release binary is glibc-linked (built inside a Debian
+container), so a stock NixOS system won't have the dynamic linker
+it expects. Run it under [`nix-ld`](https://github.com/Mic92/nix-ld):
+add the following to `configuration.nix` and rebuild, then the
+binary shipped in the release tarball will run directly.
+
+```nix
+programs.nix-ld.enable = true;
+programs.nix-ld.libraries = with pkgs; [
+  SDL2
+  ncurses
+  zlib
+  gmp
+];
+```
+
+Building from source with `stack build` doesn't need this — the
+Nix integration handles it for you.
+
 ## Running
 
 ```sh
@@ -96,10 +117,12 @@ run, or *Continue* to load the most recent save.
 stack test
 ```
 
-140+ examples covering movement, FOV, combat rolls, progression,
+290+ examples covering movement, FOV, combat rolls, progression,
 command parsing, inventory, loot, quest advancement, save/load
 (with a temp-directory XDG override so tests can't touch real
-saves), and GameState event emission.
+saves), GameState event emission, UI argument parsing, and the
+pure cores of the prompt / launch / modal / save-menu key
+handlers.
 
 ## Controls
 
@@ -146,7 +169,7 @@ Save files live under the XDG data directory
 (`$XDG_DATA_HOME/dungeon-haskell/saves` on Linux,
 `~/Library/Application Support/dungeon-haskell/saves` on macOS,
 `%APPDATA%\dungeon-haskell\saves` on Windows). Each save is a
-compact binary blob prefixed with the magic header `DHSAVE01` so
+compact binary blob prefixed with the magic header `DHSAVE05` so
 old or corrupted files are rejected cleanly instead of silently
 decoding into garbage.
 
@@ -168,20 +191,31 @@ Open the prompt with `/` and type one of:
 ## Project layout
 
 ```
-app/Main.hs             Brick event loop, modal dispatch, audio + save wiring
+app/Main.hs             thin Brick shell: wires up audio, AI runtime, and the
+                        launch state; dispatches each key event to a handler
+                        in Game.UI.*
 src/Game/Types.hs       core ADTs (Tile, Monster, Item, Stats, ...)
 src/Game/GameState.hs   the whole-world snapshot + applyAction / applyCommand
 src/Game/Logic/         pure game logic (Movement, Combat, FOV, Dungeon,
                         Inventory, Loot, Quest, Progression, Command, MonsterAI)
+src/Game/UI/            per-modal key handlers extracted from Main: Types,
+                        Normal, Prompt, Modals, Launch, SaveMenu. Each owns
+                        one screen's keymap and exposes pure helpers that
+                        the test suite can drive without a Brick runtime.
 src/Game/Render.hs      Brick widgets for the map, HUD, and every modal
 src/Game/Input.hs       key → GameAction mapping
 src/Game/Audio.hs       proteaaudio-sdl shell (best-effort, degrades to silent)
 src/Game/Save.hs        binary save/load with a magic+version header
 src/Game/Save/Types.hs  shared save types (factored out to break a cycle)
+src/Game/AI/            optional LLM worker: async HTTP client, prompt
+                        templates, and the Runtime that bridges the worker
+                        thread and the Brick event loop
+src/Game/Config.hs      YAML config loader (AI endpoint, feature flags)
 test/                   HSpec + QuickCheck suite, auto-discovered
 assets/music            CC0 dungeon + boss music loops
 assets/sfx              CC0 combat and UI sound effects
 docs/plan.md            milestone-by-milestone planning doc
+scripts/release.sh      Dockerized portable-binary release script
 ```
 
 The library is deliberately factored so every game rule is testable
