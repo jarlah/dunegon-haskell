@@ -109,5 +109,21 @@ instance Binary SaveMetadata
 --   * @DHSAVE07@ — Dash escape. 'GameState' gained the
 --     'gsDashCooldown' field and 'GameAction' gained the 'Dash'
 --     constructor, which both change the derived Binary encoding.
+--   * @DHSAVE08@ — Passive HP regen (Milestone 17, Step 1A).
+--     'GameState' gained the 'gsRegenCounter' field driving the
+--     "safe turns accumulated toward +1 HP" counter, which changes
+--     the derived Binary encoding.
+--   * @DHSAVE09@ — Run stats / gamification (Milestone 17, Step 2).
+--     'GameState' gained 'gsTurnsElapsed', 'gsPotionsUsed',
+--     'gsSavesUsed', and 'gsFinalTurns' so the HUD and the victory
+--     modal can display a scoreboard. All four ride on the derived
+--     'Binary' instance for 'GameState', so the format bump is
+--     mechanical.
+--   * @DHSAVE10@ — Respawning chests (Milestone 17, Step 1B).
+--     'GameState' gained 'gsChests' and 'ParkedLevel' gained
+--     'plChests', carrying the new 'Chest' / 'ChestState' types
+--     from "Game.Logic.Chest". Both ride on the derived 'Binary'
+--     instance once the orphan 'Generic' / 'Binary' instances are
+--     added in "Game.Save".
 saveMagic :: BL.ByteString
-saveMagic = BL8.pack "DHSAVE07"
+saveMagic = BL8.pack "DHSAVE10"

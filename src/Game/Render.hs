@@ -6,6 +6,8 @@ module Game.Render
   , bossAttr
   , doorAttr
   , lockedDoorAttr
+  , chestFullAttr
+  , chestEmptyAttr
   , saveMenuCursorAttr
   , saveMenuEmptyAttr
   , launchCursorAttr
@@ -22,6 +24,7 @@ import Data.Set (Set)
 import Linear (V2(..))
 
 import Game.GameState
+import Game.Logic.Chest (Chest(..), ChestState(..))
 import qualified Game.Logic.Inventory as Inv
 import Game.Logic.Progression (xpForNextLevel)
 import Game.Logic.Quest
@@ -71,6 +74,19 @@ doorAttr = attrName "door"
 --   glance, without needing a distinct glyph.
 lockedDoorAttr :: AttrName
 lockedDoorAttr = attrName "lockedDoor"
+
+-- | Attribute name for a full chest — a chest that still has loot
+--   the player can collect. Main wires this to a bright color so
+--   full chests are visually distinct from looted ones without
+--   changing the glyph.
+chestFullAttr :: AttrName
+chestFullAttr = attrName "chestFull"
+
+-- | Attribute name for an empty chest cooling down toward a refill.
+--   Main wires this to a dim color so the same @=@ glyph still
+--   reads as "a chest, but not worth walking to right now".
+chestEmptyAttr :: AttrName
+chestEmptyAttr = attrName "chestEmpty"
 
 -- | Attribute name for the highlighted cursor row in the save/load
 --   modal. Main wires this to a reverse-video attribute so the
@@ -134,7 +150,7 @@ drawGame wizardEnabled gs =
          Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
            [drawDialogueModal (gsQuests gs) i npc, baseLayer]
          _
-           | gsVictory      gs  -> [drawVictoryModal, baseLayer]
+           | gsVictory      gs  -> [drawVictoryModal gs, baseLayer]
            | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
            | gsHelpOpen     gs  -> [drawHelpModal wizardEnabled, baseLayer]
            | Just sm <- gsSaveMenu gs -> [drawSaveMenuModal sm, baseLayer]
@@ -231,6 +247,10 @@ visibleCell gs pos
       withAttr npcAttr $ str "N"
   | Just (_, it) <- find (\(p, _) -> p == pos) (gsItemsOnFloor gs) =
       str [itemGlyph it]
+  | Just c <- find (\ch -> chestPos ch == pos) (gsChests gs) =
+      case chestState c of
+        ChestFull _  -> withAttr chestFullAttr  $ str "="
+        ChestEmpty _ -> withAttr chestEmptyAttr $ str "="
   | otherwise =
       let glyph = tileGlyph (gsLevel gs) pos
           -- Doors get their own color so @'@ and @+@ don't get
@@ -264,6 +284,12 @@ drawStatus gs =
       dashStr
         | gsDashCooldown gs <= 0 = "ready"
         | otherwise              = show (gsDashCooldown gs)
+      -- Run-stats readout: prefer the frozen victory snapshot so
+      -- the timer stops ticking once the dragon falls, otherwise
+      -- show the live counter.
+      turnsShown = case gsFinalTurns gs of
+        Just t  -> t
+        Nothing -> gsTurnsElapsed gs
       status  = "LVL "   ++ show (sLevel s)
              ++ "   XP: "  ++ show (sXP s) ++ "/" ++ show (xpForNextLevel (sLevel s))
              ++ "   HP: "  ++ show (sHP s) ++ "/" ++ show (sMaxHP s)
@@ -271,6 +297,8 @@ drawStatus gs =
              ++ "   DEF: " ++ show (sDefense effStats)
              ++ "   Depth: " ++ show (dlDepth dl)
              ++ "   Dash: " ++ dashStr
+             ++ "   T: "   ++ show turnsShown
+             ++ "   P: "   ++ show (gsPotionsUsed gs)
              ++ (if gsDead gs then "   *** YOU DIED ***" else "")
   in str status
 
@@ -571,20 +599,40 @@ drawLaunchMenu _ lm =
 
 -- | Shown when the player lands the killing blow on the dragon.
 --   Freezes the game (gameplay input is ignored while gsVictory is
---   true) so the only thing the player can do is quit. The framing
---   matches the quit-confirmation modal so the key hint lines up.
-drawVictoryModal :: Widget Name
-drawVictoryModal =
-  centerLayer
-    $ borderWithLabel (str " Victory! ")
-    $ padAll 1
-    $ vBox
-        [ str "The dragon is slain and the dungeon falls silent."
-        , str ""
-        , str "You have won the run."
-        , str ""
-        , str "  q / Esc : exit to the prompt"
-        ]
+--   true) so the only thing the player can do is quit. The body
+--   shows the full run-stats score card: how many turns the boss
+--   kill took, how many potions were burned, how many saves were
+--   used, the final depth and player level, and a rank bucket
+--   computed by 'runRank'. The framing matches the
+--   quit-confirmation modal so the key hint lines up.
+drawVictoryModal :: GameState -> Widget Name
+drawVictoryModal gs =
+  let stats   = gsPlayerStats gs
+      dl      = gsLevel gs
+      turns   = case gsFinalTurns gs of
+                  Just t  -> t
+                  Nothing -> gsTurnsElapsed gs  -- defensive: victory modal implies Just
+      statLine label value =
+        str (padLabel label ++ show value)
+      padLabel l = l ++ replicate (14 - length l) ' '
+  in centerLayer
+       $ borderWithLabel (str " Victory! ")
+       $ padAll 1
+       $ vBox
+           [ str "The dragon is slain and the dungeon falls silent."
+           , str ""
+           , str "You have won the run."
+           , str ""
+           , statLine "Turns:"        turns
+           , statLine "Potions used:" (gsPotionsUsed gs)
+           , statLine "Saves used:"   (gsSavesUsed gs)
+           , statLine "Final depth:"  (dlDepth dl)
+           , statLine "Player level:" (sLevel stats)
+           , str ""
+           , str ("Rank: " ++ runRank gs)
+           , str ""
+           , str "  q / Esc : exit to the prompt"
+           ]
 
 -- | A reference sheet for every key binding, modal, and slash
 --   command the game currently understands. Opened with @?@, scrolled

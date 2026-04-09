@@ -12,8 +12,11 @@ import System.Random (mkStdGen)
 import Test.Hspec
 
 import Game.GameState
+import Game.Logic.Chest
+  ( Chest(..), ChestState(..), chestRespawnTurns )
 import Game.Logic.Command (Command(..))
 import Game.Logic.Dungeon (defaultLevelConfig)
+import qualified Game.Logic.Inventory as Inv
 import Game.Logic.MonsterAI (chebyshev)
 import Game.Logic.Quest
   ( Quest(..), QuestGoal(..), QuestStatus(..), mkQuest )
@@ -73,6 +76,12 @@ mkFixture seed ppos pstats monsters = GameState
   , gsPendingKeys       = []
   , gsLockedDoorPrompt  = Nothing
   , gsDashCooldown      = 0
+  , gsRegenCounter      = 0
+  , gsTurnsElapsed      = 0
+  , gsPotionsUsed       = 0
+  , gsSavesUsed         = 0
+  , gsFinalTurns        = Nothing
+  , gsChests            = []
   }
 
 -- | Player stats strong enough to one-shot anything normal.
@@ -643,11 +652,390 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
       Left e    -> expectationFailure ("decode failed: " ++ show e)
 
   -- ----------------------------------------------------------------
+  -- Milestone 17 / Step 1A: passive HP regen. The rule is simple —
+  -- once the player has no hostile monster in their FOV, every call
+  -- to 'tickRegen' bumps a counter; at 'regenInterval' the player
+  -- regains 1 HP and the counter resets. Any hostile in FOV resets
+  -- the counter immediately, and death / victory / full HP short
+  -- the whole thing out.
+  --
+  -- Tests drive 'tickRegen' directly (rather than going through
+  -- 'applyAction') so each rule is covered in isolation, which is
+  -- the whole point of the pure-functional architecture.
+  -- ----------------------------------------------------------------
+  describe "tickRegen (passive HP regen)" $ do
+    it "is a no-op at full HP and keeps the counter at zero" $ do
+      let gs  = mkFixture 1 (V2 2 2) overpoweredPlayer []
+          gs' = tickRegen (gs { gsRegenCounter = 7 })
+      -- Counter is zeroed (a "safe" tick at full HP has nothing to
+      -- accumulate toward) and HP is unchanged.
+      sHP (gsPlayerStats gs') `shouldBe` sMaxHP (gsPlayerStats gs')
+      gsRegenCounter gs'                `shouldBe` 0
+
+    it "does nothing when the player is dead" $ do
+      let pstats = overpoweredPlayer { sHP = 5 }
+          gs  = (mkFixture 1 (V2 2 2) pstats []) { gsDead = True
+                                                 , gsRegenCounter = regenInterval - 1
+                                                 }
+          gs' = tickRegen gs
+      gsRegenCounter gs' `shouldBe` regenInterval - 1
+      sHP (gsPlayerStats gs') `shouldBe` 5
+
+    it "does nothing when the player has already won" $ do
+      let pstats = overpoweredPlayer { sHP = 5 }
+          gs  = (mkFixture 1 (V2 2 2) pstats []) { gsVictory = True
+                                                 , gsRegenCounter = regenInterval - 1
+                                                 }
+          gs' = tickRegen gs
+      gsRegenCounter gs' `shouldBe` regenInterval - 1
+      sHP (gsPlayerStats gs') `shouldBe` 5
+
+    it "12 safe ticks yield +1 HP and reset the counter" $ do
+      let pstats = overpoweredPlayer { sHP = 10 }
+          -- No monsters on the level, so nothing can be visible.
+          gs0    = mkFixture 1 (V2 2 2) pstats []
+          gsN    = iterate tickRegen gs0 !! regenInterval
+      sHP (gsPlayerStats gsN) `shouldBe` 11
+      gsRegenCounter gsN      `shouldBe` 0
+
+    it "ticks again after a reset (24 safe ticks -> +2 HP)" $ do
+      let pstats = overpoweredPlayer { sHP = 10 }
+          gs0    = mkFixture 1 (V2 2 2) pstats []
+          gsN    = iterate tickRegen gs0 !! (2 * regenInterval)
+      sHP (gsPlayerStats gsN) `shouldBe` 12
+      gsRegenCounter gsN      `shouldBe` 0
+
+    it "resets the counter when a hostile is visible in gsVisible" $ do
+      let pstats = overpoweredPlayer { sHP = 10 }
+          ratPos = V2 1 1
+          rat    = ratAt ratPos
+          gs     = (mkFixture 1 (V2 2 2) pstats [rat])
+                     { gsRegenCounter = regenInterval - 1
+                       -- The rat's tile is in the visible set, so
+                       -- it counts as "hostile visible".
+                     , gsVisible      = Set.fromList (monsterTiles rat)
+                     }
+          gs'    = tickRegen gs
+      gsRegenCounter gs'      `shouldBe` 0
+      sHP (gsPlayerStats gs') `shouldBe` 10  -- no regen
+
+    it "still ticks when a monster exists but is NOT visible" $ do
+      -- Same rat as above, but gsVisible is empty: the player has
+      -- successfully broken line of sight, so regen runs.
+      let pstats = overpoweredPlayer { sHP = 10 }
+          rat    = ratAt (V2 1 1)
+          gs     = (mkFixture 1 (V2 2 2) pstats [rat])
+                     { gsRegenCounter = regenInterval - 1
+                     , gsVisible      = Set.empty
+                     }
+          gs'    = tickRegen gs
+      sHP (gsPlayerStats gs') `shouldBe` 11
+      gsRegenCounter gs'      `shouldBe` 0
+
+    it "never heals above sMaxHP" $ do
+      -- One tick below full, counter primed: next tick heals to
+      -- sMaxHP and stops — subsequent ticks stay clamped.
+      let pstats = overpoweredPlayer { sHP = sMaxHP overpoweredPlayer - 1 }
+          gs     = (mkFixture 1 (V2 2 2) pstats [])
+                     { gsRegenCounter = regenInterval - 1 }
+          gs'    = tickRegen gs
+          gs''   = iterate tickRegen gs' !! (3 * regenInterval)
+      sHP (gsPlayerStats gs')  `shouldBe` sMaxHP overpoweredPlayer
+      sHP (gsPlayerStats gs'') `shouldBe` sMaxHP overpoweredPlayer
+
+  -- ----------------------------------------------------------------
+  -- Milestone 17 / Step 2: run stats and gamification. Four counters
+  -- were added to 'GameState' so the HUD and the victory modal can
+  -- show a score card: 'gsTurnsElapsed', 'gsPotionsUsed',
+  -- 'gsSavesUsed', and the frozen-on-victory 'gsFinalTurns'. The
+  -- rules, from the plan:
+  --
+  --   * 'tickTurnCounter' advances 'gsTurnsElapsed' by exactly one,
+  --     but only while the run is still live (not dead, not already
+  --     won).
+  --   * 'playerUseItem' bumps 'gsPotionsUsed' in its 'IPotion' arm
+  --     and nowhere else.
+  --   * The first boss-killing blow snapshots 'gsFinalTurns' so the
+  --     clock stops at the moment of victory, not slightly later.
+  --   * 'runRank' reads those three counters and buckets the run
+  --     into Legendary / Heroic / Victor.
+  --
+  -- All four counters roundtrip through Binary via StandaloneDeriving
+  -- and are covered by the encode/decode roundtrip test.
+  -- ----------------------------------------------------------------
+  describe "tickTurnCounter (run clock)" $ do
+    it "increments gsTurnsElapsed by exactly one per call" $ do
+      let gs  = mkFixture 1 (V2 2 2) overpoweredPlayer []
+          gs' = tickTurnCounter gs
+      gsTurnsElapsed gs' `shouldBe` 1
+
+    it "is exactly linear across many ticks" $ do
+      let gs  = mkFixture 1 (V2 2 2) overpoweredPlayer []
+          gsN = iterate tickTurnCounter gs !! 42
+      gsTurnsElapsed gsN `shouldBe` 42
+
+    it "is a no-op once the player is dead" $ do
+      let gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsDead = True, gsTurnsElapsed = 123 }
+          gs' = tickTurnCounter gs
+      gsTurnsElapsed gs' `shouldBe` 123
+
+    it "is a no-op once gsFinalTurns is already frozen" $ do
+      -- gsFinalTurns = Just _ means the run has ended (victory);
+      -- further ticks must not nudge the counter or the HUD
+      -- would show a number larger than the frozen final.
+      let gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsTurnsElapsed = 777
+                  , gsFinalTurns   = Just 777
+                  , gsVictory      = True
+                  }
+          gs' = iterate tickTurnCounter gs !! 50
+      gsTurnsElapsed gs' `shouldBe` 777
+      gsFinalTurns gs'   `shouldBe` Just 777
+
+  describe "playerUseItem / run-stats counters" $ do
+    it "quaffing a potion increments gsPotionsUsed by 1" $ do
+      let inv    = emptyInventory { invItems = [IPotion HealingMinor] }
+          pstats = overpoweredPlayer { sHP = 5 }
+          gs     = (mkFixture 1 (V2 2 2) pstats [])
+                     { gsInventory = inv }
+          gs'    = playerUseItem 0 gs
+      gsPotionsUsed gs' `shouldBe` 1
+
+    it "quaffing two potions increments gsPotionsUsed by 2" $ do
+      let inv    = emptyInventory
+                     { invItems = [IPotion HealingMinor, IPotion HealingMajor] }
+          pstats = overpoweredPlayer { sHP = 1 }
+          gs     = (mkFixture 1 (V2 2 2) pstats [])
+                     { gsInventory = inv }
+          gs'  = playerUseItem 0 gs
+          -- After 'dropItem 0', the second potion shifts to index 0.
+          gs'' = playerUseItem 0 gs'
+      gsPotionsUsed gs'' `shouldBe` 2
+
+    it "equipping a weapon does not touch gsPotionsUsed" $ do
+      let inv = emptyInventory { invItems = [IWeapon ShortSword] }
+          gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsInventory = inv }
+          gs' = playerUseItem 0 gs
+      gsPotionsUsed gs' `shouldBe` 0
+
+    it "equipping armor does not touch gsPotionsUsed" $ do
+      let inv = emptyInventory { invItems = [IArmor LeatherArmor] }
+          gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsInventory = inv }
+          gs' = playerUseItem 0 gs
+      gsPotionsUsed gs' `shouldBe` 0
+
+    it "fiddling with a key does not touch gsPotionsUsed" $ do
+      let inv = emptyInventory { invItems = [IKey (KeyId 7)] }
+          gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsInventory = inv }
+          gs' = playerUseItem 0 gs
+      gsPotionsUsed gs' `shouldBe` 0
+
+  describe "victory freeze (gsFinalTurns snapshot)" $ do
+    -- Dragons have an 80-HP baseline, but the test fixture's
+    -- 'overpoweredPlayer' has sAttack = 9999, so as long as the
+    -- d20-to-hit roll lands, one 'playerAttack' call one-shots the
+    -- boss. Seed 0 produces a first roll that hits (checked in
+    -- GHCi), which lets the test stay RNG-deterministic without any
+    -- extra plumbing.
+    it "a boss-killing blow snapshots gsTurnsElapsed into gsFinalTurns" $ do
+      let dragon = mkMonster Dragon (V2 1 1)
+          gs     = (mkFixture 0 (V2 3 3) overpoweredPlayer [dragon])
+                     { gsTurnsElapsed = 250 }
+          gs'    = playerAttack gs 0 dragon
+      gsVictory gs'   `shouldBe` True
+      gsFinalTurns gs' `shouldBe` Just 250
+
+    it "a non-boss kill leaves gsFinalTurns unchanged" $ do
+      let rat = mkMonster Rat (V2 1 1)
+          gs  = (mkFixture 0 (V2 3 3) overpoweredPlayer [rat])
+                  { gsTurnsElapsed = 40 }
+          gs' = playerAttack gs 0 rat
+      gsVictory gs'    `shouldBe` False
+      gsFinalTurns gs' `shouldBe` Nothing
+
+    it "subsequent tickTurnCounter calls after victory leave counters frozen" $ do
+      let dragon = mkMonster Dragon (V2 1 1)
+          gs     = (mkFixture 0 (V2 3 3) overpoweredPlayer [dragon])
+                     { gsTurnsElapsed = 250 }
+          gs'    = playerAttack gs 0 dragon
+          gs''   = iterate tickTurnCounter gs' !! 100
+      gsTurnsElapsed gs'' `shouldBe` 250
+      gsFinalTurns gs''   `shouldBe` Just 250
+
+  describe "runRank buckets" $ do
+    let mkDone turns pots saves =
+          (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+            { gsVictory     = True
+            , gsFinalTurns  = Just turns
+            , gsTurnsElapsed = turns
+            , gsPotionsUsed  = pots
+            , gsSavesUsed    = saves
+            }
+    it "an in-progress run ranks as 'In Progress'" $
+      runRank (mkFixture 1 (V2 2 2) overpoweredPlayer []) `shouldBe` "In Progress"
+
+    it "a dead run ranks as 'Fallen'" $
+      runRank ((mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                 { gsDead = True }) `shouldBe` "Fallen"
+
+    it "a clean, fast, save-less run is Legendary" $
+      runRank (mkDone 1500 3 0) `shouldBe` "Legendary"
+
+    it "one save disqualifies Legendary (demotes to Heroic)" $
+      runRank (mkDone 1500 3 1) `shouldBe` "Heroic"
+
+    it "four potions disqualifies Legendary (demotes to Heroic)" $
+      runRank (mkDone 1500 4 0) `shouldBe` "Heroic"
+
+    it "1501 turns disqualifies Legendary (demotes to Heroic)" $
+      runRank (mkDone 1501 3 0) `shouldBe` "Heroic"
+
+    it "exactly 2500 turns / 6 potions / 2 saves is still Heroic" $
+      runRank (mkDone 2500 6 2) `shouldBe` "Heroic"
+
+    it "three saves drops out of Heroic down to Victor" $
+      runRank (mkDone 2500 6 3) `shouldBe` "Victor"
+
+    it "seven potions drops out of Heroic down to Victor" $
+      runRank (mkDone 2500 7 2) `shouldBe` "Victor"
+
+    it "2501 turns drops out of Heroic down to Victor" $
+      runRank (mkDone 2501 6 2) `shouldBe` "Victor"
+
+    it "a slow slog still earns Victor" $
+      runRank (mkDone 10000 50 20) `shouldBe` "Victor"
+
+  describe "run-stats counters roundtrip through Binary" $
+    it "encodeSave / decodeSave preserves all four counters" $ do
+      let gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsTurnsElapsed = 1337
+                  , gsPotionsUsed  = 9
+                  , gsSavesUsed    = 4
+                  , gsFinalTurns   = Just 1337
+                  }
+      case decodeSave (encodeSave gs0) of
+        Right gs' -> do
+          gsTurnsElapsed gs' `shouldBe` 1337
+          gsPotionsUsed gs'  `shouldBe` 9
+          gsSavesUsed gs'    `shouldBe` 4
+          gsFinalTurns gs'   `shouldBe` Just 1337
+        Left e    -> expectationFailure ("decode failed: " ++ show e)
+
+  -- --------------------------------------------------------------
+  -- Respawning chests (Milestone 17, Step 1B)
+  -- --------------------------------------------------------------
+  --
+  -- The chest world object is covered in isolation by
+  -- 'Game.Logic.ChestSpec'. The tests here exercise the
+  -- integration points in 'GameState': tick propagation, the
+  -- bump-to-open flow in 'applyAction', and the Binary roundtrip
+  -- that must carry both shapes of 'ChestState'.
+
+  describe "tickChests (per-turn decay of empty chests)" $ do
+
+    it "decrements every empty chest's counter by one per call" $ do
+      let pot = IPotion HealingMinor
+          c1  = Chest { chestPos = V2 1 1, chestState = ChestEmpty 5 }
+          c2  = Chest { chestPos = V2 2 2, chestState = ChestFull pot }
+          c3  = Chest { chestPos = V2 3 3, chestState = ChestEmpty 1 }
+          gs0 = (mkFixture 0 (V2 4 4) overpoweredPlayer [])
+                  { gsChests = [c1, c2, c3] }
+          gs1 = tickPlayerTurn gs0
+      case gsChests gs1 of
+        [r1, r2, r3] -> do
+          chestState r1 `shouldBe` ChestEmpty 4
+          chestState r2 `shouldBe` ChestFull pot
+          chestState r3 `shouldBe` ChestEmpty 0
+        _ -> expectationFailure "chest list length changed"
+
+    it "clamps an already-zero chest at zero (no negative drift)" $ do
+      let c0  = Chest { chestPos = V2 1 1, chestState = ChestEmpty 0 }
+          gs0 = (mkFixture 0 (V2 4 4) overpoweredPlayer [])
+                  { gsChests = [c0] }
+          gs1 = tickPlayerTurn gs0
+      case gsChests gs1 of
+        [r] -> chestState r `shouldBe` ChestEmpty 0
+        _   -> expectationFailure "chest list length changed"
+
+  describe "playerOpenChest (bump-to-open)" $ do
+
+    it "moves a full chest's item into the inventory and empties it" $ do
+      let item = IPotion HealingMajor
+          c0   = Chest { chestPos = V2 1 1, chestState = ChestFull item }
+          gs0  = (mkFixture 0 (V2 0 0) overpoweredPlayer [])
+                   { gsChests = [c0] }
+          gs'  = playerOpenChest 0 c0 gs0
+      invItems (gsInventory gs') `shouldBe` [item]
+      case gsChests gs' of
+        [r] -> chestState r `shouldBe` ChestEmpty chestRespawnTurns
+        _   -> expectationFailure "chest list length changed"
+
+    it "on a full bag drops the item on the chest's tile instead" $ do
+      -- Fill the bag to capacity with junk keys; then opening the
+      -- chest must spill its item onto the floor rather than lose it.
+      let pos    = V2 1 1
+          item   = IPotion HealingMajor
+          c0     = Chest { chestPos = pos, chestState = ChestFull item }
+          -- Inv.addItem succeeds until the bag hits its cap, so we
+          -- stuff it until a subsequent add would fail.
+          fullBag =
+            foldr
+              (\k inv -> case Inv.addItem (IKey (KeyId k)) inv of
+                           Right inv' -> inv'
+                           Left  _    -> inv)
+              emptyInventory
+              [1 .. 100 :: Int]
+          gs0 = (mkFixture 0 (V2 0 0) overpoweredPlayer [])
+                  { gsChests    = [c0]
+                  , gsInventory = fullBag
+                  }
+          gs' = playerOpenChest 0 c0 gs0
+      -- item landed on the floor at the chest tile
+      lookup pos (gsItemsOnFloor gs') `shouldBe` Just item
+      -- chest flipped to empty with full cooldown
+      case gsChests gs' of
+        [r] -> chestState r `shouldBe` ChestEmpty chestRespawnTurns
+        _   -> expectationFailure "chest list length changed"
+      -- bag untouched
+      length (invItems (gsInventory gs'))
+        `shouldBe` length (invItems fullBag)
+
+    it "bumping an already-empty chest is a pure message no-op" $ do
+      let c0  = Chest { chestPos = V2 1 1, chestState = ChestEmpty 42 }
+          gs0 = (mkFixture 0 (V2 0 0) overpoweredPlayer [])
+                  { gsChests = [c0] }
+          gs' = playerOpenChest 0 c0 gs0
+      gsChests gs' `shouldBe` [c0]
+      invItems (gsInventory gs') `shouldBe` []
+      gsItemsOnFloor gs' `shouldBe` []
+
+  describe "chest save roundtrip" $
+    it "encodeSave / decodeSave preserves ChestFull and ChestEmpty" $ do
+      let full  = Chest { chestPos   = V2 3 4
+                        , chestState = ChestFull (IPotion HealingMajor) }
+          empty = Chest { chestPos   = V2 5 6
+                        , chestState = ChestEmpty 37 }
+          gs0   = (mkFixture 0 (V2 0 0) overpoweredPlayer [])
+                    { gsChests = [full, empty] }
+      case decodeSave (encodeSave gs0) of
+        Right gs' -> gsChests gs' `shouldBe` [full, empty]
+        Left  e   -> expectationFailure ("decode failed: " ++ show e)
+
+  -- ----------------------------------------------------------------
   -- Softlock safety: when 'newGame' mints a locked door on depth 1,
   -- the matching key must be placed on the spawn-side of that door.
   -- We scan many seeds rather than asserting against a single known
   -- lock-bearing seed, so drift in the generator doesn't silently
   -- hide a regression.
+  --
+  -- Note: this must stay the *last* describe in the spec because its
+  -- inner 'it' carries a 'where' clause with helper bindings, and
+  -- Haskell's layout rule means we can't add more describes after a
+  -- where-bearing do-statement.
   -- ----------------------------------------------------------------
 
   describe "newGame locked-door key reachability" $

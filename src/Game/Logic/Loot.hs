@@ -9,6 +9,7 @@ module Game.Logic.Loot
   ( rollLoot
   , dropChance
   , lootTable
+  , pickWeighted
   ) where
 
 import System.Random (StdGen, randomR)

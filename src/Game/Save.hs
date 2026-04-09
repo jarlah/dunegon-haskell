@@ -95,6 +95,7 @@ import           System.Directory
 import           System.FilePath            ((</>), (<.>), takeFileName)
 
 import           Game.GameState
+import           Game.Logic.Chest           (Chest (..), ChestState (..))
 import           Game.Logic.Quest
 import           Game.Save.Types
 import           Game.Types
@@ -163,6 +164,8 @@ deriving instance Generic QuestEvent
 deriving instance Generic Quest
 
 deriving instance Generic NPC
+deriving instance Generic ChestState
+deriving instance Generic Chest
 deriving instance Generic ParkedLevel
 deriving instance Generic SaveMenu
 deriving instance Generic SaveMenuMode
@@ -197,6 +200,8 @@ instance Binary QuestEvent
 instance Binary Quest
 
 instance Binary NPC
+instance Binary ChestState
+instance Binary Chest
 instance Binary ParkedLevel
 instance Binary SaveMenu
 instance Binary SaveMenuMode

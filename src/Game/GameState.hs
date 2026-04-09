@@ -22,6 +22,14 @@ module Game.GameState
   , shouldPlayBossMusic
   , fovRadius
   , monsterSightRadius
+  , regenInterval
+  , tickPlayerTurn
+  , tickRegen
+  , tickTurnCounter
+  , runRank
+  , playerUseItem
+  , playerAttack
+  , playerOpenChest
   ) where
 
 import qualified Data.Map.Strict as Map
@@ -34,6 +42,8 @@ import System.Random (StdGen, mkStdGen, randomR)
 
 import Game.Save.Types (SaveMetadata)
 import Game.Types
+import qualified Game.Logic.Chest as Chest
+import Game.Logic.Chest (Chest(..), ChestState(..), chestRespawnTurns)
 import qualified Game.Logic.Combat as C
 import Game.Logic.Combat (Damage(..))
 import Game.Logic.Command (Command(..), isCheatCommand)
@@ -80,6 +90,19 @@ data GameState = GameState
     -- ^ loot that has been dropped on the current level and not yet
     --   picked up. Kept as a flat list (duplicates allowed) so
     --   multiple items can pile on a single tile.
+  , gsChests :: ![Chest]
+    -- ^ respawning loot chests on the /current/ floor. Each chest
+    --   is either 'ChestFull' (carrying one 'Item' the player can
+    --   collect by bumping into it) or 'ChestEmpty' with a
+    --   per-turn cooldown counter. The counter ticks down on every
+    --   'tickPlayerTurn' call while the player is on this floor;
+    --   the refill check happens in 'loadParked' on floor re-entry,
+    --   so parked floors don't need to keep their own ticking
+    --   clock. Placement is done by the generator
+    --   ('newGame' / 'generateAndEnter') and stored on this field
+    --   only — chests are /not/ a 'Tile' variant, so they don't
+    --   interfere with existing terrain logic or the door /
+    --   stairs path-finding.
   , gsInventoryOpen :: !Bool
     -- ^ is the inventory modal currently open? Input routes through
     --   the modal handler when true.
@@ -226,6 +249,49 @@ data GameState = GameState
     --   decrements this toward 0 (see 'processMonsters'). Set to
     --   'dashCooldownTurns' when a dash is taken. Persisted in
     --   saves so the cooldown survives quicksave / quickload.
+  , gsRegenCounter :: !Int
+    -- ^ turns accumulated toward the next passive HP regen tick.
+    --   Incremented every turn by 'tickRegen' as long as the
+    --   player is at less than full HP AND no hostile monster is
+    --   currently in the player's FOV. When it reaches
+    --   'regenInterval' the player gains 1 HP (clamped to
+    --   'sMaxHP') and the counter resets. Any turn where a
+    --   hostile becomes visible — or the player takes damage
+    --   while a hostile is visible — resets the counter to 0, so
+    --   the player must fully disengage before sustain kicks in.
+    --   This is the sustain reward for retreating via dash +
+    --   close-door rather than tanking every encounter.
+  , gsTurnsElapsed :: !Int
+    -- ^ total turn-advancing actions the player has taken on
+    --   /this/ run. Incremented once per 'tickPlayerTurn' call
+    --   (so dash, wait, move, pickup, use, stairs all count —
+    --   CloseDoor and blocked-move no-ops don't). The counter
+    --   freezes on player death ('gsDead') and on victory (once
+    --   'gsFinalTurns' has been snapshot), so the HUD and the
+    --   victory modal can keep displaying the final number
+    --   without it drifting forward while the player lingers on
+    --   the end-of-run screen.
+  , gsPotionsUsed :: !Int
+    -- ^ total healing potions the player has quaffed on this run.
+    --   Bumped in the 'IPotion' branch of 'playerUseItem' at the
+    --   moment the potion is consumed. Used by the victory modal
+    --   to show a "potions burned" line and factored into the
+    --   run rank — a no-heal run ranks higher than a chug-and-win.
+  , gsSavesUsed :: !Int
+    -- ^ total successful save operations (quicksave + slot save)
+    --   recorded on this run. Bumped at every save call site
+    --   *before* the bytes hit disk, so the number persisted in
+    --   the save blob already includes the save that's being
+    --   written. Used by the victory modal / run rank as a
+    --   self-regulating nudge: there is no punishment for saving,
+    --   just a visible marker on the scoreboard.
+  , gsFinalTurns :: !(Maybe Int)
+    -- ^ snapshot of 'gsTurnsElapsed' at the moment the player won
+    --   (the killing blow on the boss flips 'gsVictory' to
+    --   'True'). 'Nothing' for an in-progress run. The HUD reads
+    --   this in preference to the live counter once it becomes
+    --   'Just' so the timer visibly freezes on victory instead of
+    --   continuing to tick while the modal is open.
   } deriving (Show)
 
 -- | Actions that need a direction supplied /after/ the initiating
@@ -326,6 +392,11 @@ data ParkedLevel = ParkedLevel
   { plLevel     :: !DungeonLevel
   , plMonsters  :: ![Monster]
   , plItems     :: ![(Pos, Item)]
+  , plChests    :: ![Chest]
+    -- ^ chests on this floor at the moment it was parked. Ticks
+    --   only run for chests on the /current/ floor via
+    --   'tickPlayerTurn', so parked chests pass their dormant time
+    --   frozen and are refilled on re-entry in 'loadParked'.
   , plExplored  :: !(Set Pos)
   , plPlayerPos :: !Pos
   , plBossRoom  :: !(Maybe D.Room)
@@ -375,6 +446,14 @@ dashMaxSteps = 5
 dashCooldownTurns :: Int
 dashCooldownTurns = 60
 
+-- | How many consecutive "safe" turns (no hostile monster visible
+--   in the player's FOV) the player must accumulate before
+--   regenerating 1 HP via 'tickRegen'. Twelve feels slow enough
+--   that potions still matter in active combat but fast enough
+--   that retreating behind a closed door actually pays off.
+regenInterval :: Int
+regenInterval = 12
+
 -- | How far the player can see, in tiles. Measured in Euclidean
 --   distance; 8 feels right for a 60×20 dungeon.
 fovRadius :: Int
@@ -415,6 +494,7 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsPrompt      = Nothing
   , gsInventory   = emptyInventory
   , gsItemsOnFloor = []
+  , gsChests       = []
   , gsInventoryOpen = False
   , gsQuests      = []
   , gsNPCs        = []
@@ -437,6 +517,11 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsPendingKeys       = []
   , gsLockedDoorPrompt  = Nothing
   , gsDashCooldown      = 0
+  , gsRegenCounter      = 0
+  , gsTurnsElapsed      = 0
+  , gsPotionsUsed       = 0
+  , gsSavesUsed         = 0
+  , gsFinalTurns        = Nothing
   }
 
 -- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
@@ -481,13 +566,26 @@ newGame gen0 cfg =
         Just (kid, _) -> [kid]
         Nothing       -> []
       (keyLoot, gen5)  = placeKeyLoot gen4 reachable rooms keysToPlace
-      base             = mkGameState gen5 dl startPos monsters
+      -- Depth 1 always seeds exactly one chest in a non-starting
+      -- room, so the tutorial floor introduces the mechanic. Depths
+      -- 2-3 are deliberately chest-less (see 'generateAndEnter'),
+      -- and deeper floors get their chests rolled when they're
+      -- first generated.
+      occupiedForChests =
+          startPos
+        : concatMap monsterTiles monsters
+        ++ map npcPos npcs
+        ++ map fst keyLoot
+      (chests, gen6) =
+        placeChests gen5 dl (drop 1 rooms) occupiedForChests 1
+      base             = mkGameState gen6 dl startPos monsters
   in base
        { gsNPCs         = npcs
        , gsBossDepth    = bossDepth
        , gsNextKeyId    = nextKey
        , gsPendingKeys  = []
        , gsItemsOnFloor = keyLoot
+       , gsChests       = chests
        }
 
 -- | 4-connected flood fill from the player spawn, treating walls
@@ -802,41 +900,48 @@ applyAction act gs0 =
                 Just (i, _) ->
                   -- Bump-to-talk: open dialogue, monsters do NOT act.
                   playerTalk i gs
-                Nothing     -> case tileAt (gsLevel gs) target of
-                  -- Bump-to-open: spending the turn opens a closed
-                  -- door in place. The player does not move this
-                  -- turn (just like bumping a wall), but the turn
-                  -- *does* advance so monsters react.
-                  Just (Door Closed) ->
-                    let gs' = openDoorAt target gs
-                        msg = "You open the door."
-                    in processMonsters
-                         (gs' { gsMessages = msg : gsMessages gs' })
-                  -- Bump-to-unlock: if the player is carrying the
-                  -- matching key, consume it, swap the door to
-                  -- 'Door Open', advance the turn. Otherwise show a
-                  -- "needs the X key" modal and DO NOT advance —
-                  -- the failed attempt is a free no-op like bumping
-                  -- a wall.
-                  Just (Door (Locked kid)) ->
-                    case findKeyIndex kid (gsInventory gs) of
-                      Just ki ->
-                        let inv' = Inv.dropItem ki (gsInventory gs)
-                            gs'  = openDoorAt target gs
-                            nm   = keyName kid
-                            msg  = "You unlock the door with the "
-                                ++ nm ++ "."
-                        in processMonsters
-                             (gs' { gsInventory = inv'
-                                  , gsMessages  = msg : gsMessages gs'
-                                  })
-                      Nothing ->
-                        -- no key: raise the modal, no turn cost
-                        gs { gsLockedDoorPrompt = Just (keyName kid) }
-                  _ ->
-                    case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
-                      Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
-                      Nothing     -> gs  -- blocked; turn does not advance
+                Nothing -> case chestAt target (gsChests gs) of
+                  -- Bump-to-open: stepping into a chest spends the
+                  -- turn opening it (or acknowledging it's empty),
+                  -- same rhythm as bumping a closed door. The player
+                  -- does NOT move onto the chest's tile.
+                  Just (ci, c) ->
+                    processMonsters (playerOpenChest ci c gs)
+                  Nothing -> case tileAt (gsLevel gs) target of
+                    -- Bump-to-open: spending the turn opens a closed
+                    -- door in place. The player does not move this
+                    -- turn (just like bumping a wall), but the turn
+                    -- *does* advance so monsters react.
+                    Just (Door Closed) ->
+                      let gs' = openDoorAt target gs
+                          msg = "You open the door."
+                      in processMonsters
+                           (gs' { gsMessages = msg : gsMessages gs' })
+                    -- Bump-to-unlock: if the player is carrying the
+                    -- matching key, consume it, swap the door to
+                    -- 'Door Open', advance the turn. Otherwise show
+                    -- a "needs the X key" modal and DO NOT advance —
+                    -- the failed attempt is a free no-op like
+                    -- bumping a wall.
+                    Just (Door (Locked kid)) ->
+                      case findKeyIndex kid (gsInventory gs) of
+                        Just ki ->
+                          let inv' = Inv.dropItem ki (gsInventory gs)
+                              gs'  = openDoorAt target gs
+                              nm   = keyName kid
+                              msg  = "You unlock the door with the "
+                                  ++ nm ++ "."
+                          in processMonsters
+                               (gs' { gsInventory = inv'
+                                    , gsMessages  = msg : gsMessages gs'
+                                    })
+                        Nothing ->
+                          -- no key: raise the modal, no turn cost
+                          gs { gsLockedDoorPrompt = Just (keyName kid) }
+                    _ ->
+                      case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
+                        Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
+                        Nothing     -> gs  -- blocked; turn does not advance
 
 -- | Append events to the running per-turn log.
 emit :: GameState -> [GameEvent] -> GameState
@@ -1055,6 +1160,68 @@ npcAt p = go 0
       | npcPos n == p = Just (i, n)
       | otherwise     = go (i + 1) rest
 
+-- | Index lookup mirroring 'monsterAt' but for chests. Returns the
+--   first chest whose 'chestPos' matches, along with its position
+--   in 'gsChests'. Used by the bump-to-open path in 'applyAction'.
+chestAt :: Pos -> [Chest] -> Maybe (Int, Chest)
+chestAt p = go 0
+  where
+    go _ [] = Nothing
+    go i (c : rest)
+      | chestPos c == p = Just (i, c)
+      | otherwise       = go (i + 1) rest
+
+-- | Replace the chest at index @i@ with @c'@, leaving the rest of
+--   the list untouched. Total over in-range indices; out-of-range
+--   indices pass the list through unchanged (defensive — callers
+--   use 'chestAt' to find the index in the first place).
+replaceChestAt :: Int -> Chest -> [Chest] -> [Chest]
+replaceChestAt i c' = go 0
+  where
+    go _ []       = []
+    go j (c : cs)
+      | j == i    = c' : cs
+      | otherwise = c  : go (j + 1) cs
+
+-- | Bump-to-open chest interaction. Mirrors 'playerPickup'/the
+--   bump-to-open door flow:
+--
+--     * 'ChestFull' → try to stuff the item into the bag. If the
+--       bag is full, drop the item on the floor at the chest's
+--       tile instead (so nothing is ever lost). Either way the
+--       chest flips to 'ChestEmpty chestRespawnTurns'.
+--     * 'ChestEmpty' → push a "The chest is empty." message. The
+--       turn still advances (the caller wraps this in
+--       'processMonsters') — bumping a chest is an action just
+--       like bumping a door.
+playerOpenChest :: Int -> Chest -> GameState -> GameState
+playerOpenChest i c gs = case chestState c of
+  ChestEmpty _ ->
+    gs { gsMessages = "The chest is empty." : gsMessages gs }
+  ChestFull item ->
+    let emptied = c { chestState = ChestEmpty chestRespawnTurns }
+        chests' = replaceChestAt i emptied (gsChests gs)
+    in case Inv.addItem item (gsInventory gs) of
+         Right inv' ->
+           gs { gsInventory = inv'
+              , gsChests    = chests'
+              , gsMessages  =
+                  ("You open the chest and find a "
+                   ++ itemName item ++ ".")
+                  : gsMessages gs
+              }
+         Left InventoryFull ->
+           -- Bag is full: drop the item on the chest's tile so
+           -- the player can pick it up after freeing a slot.
+           -- Mirrors the "full bag" fallback the plan calls for.
+           gs { gsChests       = chests'
+              , gsItemsOnFloor = (chestPos c, item) : gsItemsOnFloor gs
+              , gsMessages     =
+                  ("The chest holds a " ++ itemName item
+                   ++ ", but your pack is full — it spills onto the floor.")
+                  : gsMessages gs
+              }
+
 ------------------------------------------------------------
 -- NPC dialogue
 ------------------------------------------------------------
@@ -1204,6 +1371,18 @@ playerAttack gs i m =
       bossMsgs     = [ "With a final roar, the " ++ monsterName (mKind m) ++ " falls. You are victorious!"
                      | killed && wasBoss ]
       victory'     = gsVictory gs || (killed && wasBoss)
+      -- Freeze the run clock at the moment of the boss-killing
+      -- blow so the victory modal shows the turn-count at the
+      -- kill, not some slightly-later number bumped by stray
+      -- 'tickTurnCounter' calls. We only set 'gsFinalTurns' on
+      -- the /transition/ — if the player somehow enters this
+      -- branch after already winning, we keep the original
+      -- snapshot.
+      finalTurns'  = case gsFinalTurns gs of
+        Just _  -> gsFinalTurns gs
+        Nothing
+          | victory' && not (gsVictory gs) -> Just (gsTurnsElapsed gs)
+          | otherwise                      -> Nothing
       gs' = emit
         gs
           { gsMonsters     = monsters'
@@ -1212,6 +1391,7 @@ playerAttack gs i m =
           , gsMessages     = reverse lootMsgs ++ bossMsgs ++ levelMsgs ++ [msg] ++ gsMessages gs
           , gsItemsOnFloor = itemsOnFloor'
           , gsVictory      = victory'
+          , gsFinalTurns   = finalTurns'
           }
         (combatEv : levelEvs ++ bossEvs)
       -- Fire the generic kill event for every fatal blow, and
@@ -1276,6 +1456,12 @@ playerUseItem idx gs =
         in gs { gsInventory   = inv'
               , gsPlayerStats = stats'
               , gsMessages    = msg : gsMessages gs
+              -- Bump the run-stats counter here: any successful
+              -- quaff counts, including ones that healed for 0
+              -- (already full HP). The player made the choice
+              -- to consume the potion, so it's "used" from the
+              -- score-card's point of view.
+              , gsPotionsUsed = gsPotionsUsed gs + 1
               }
       IWeapon _ ->
         let inv' = Inv.equip idx (gsInventory gs)
@@ -1307,6 +1493,7 @@ parkCurrent gs = ParkedLevel
   { plLevel     = gsLevel gs
   , plMonsters  = gsMonsters gs
   , plItems     = gsItemsOnFloor gs
+  , plChests    = gsChests gs
   , plExplored  = gsExplored gs
   , plPlayerPos = gsPlayerPos gs
   , plBossRoom  = gsBossRoom gs
@@ -1316,21 +1503,29 @@ parkCurrent gs = ParkedLevel
 --   responsible for removing it from 'gsLevels' if appropriate
 --   (so we don't leave a stale parked copy lying around).
 loadParked :: ParkedLevel -> GameState -> GameState
-loadParked pl gs = gs
-  { gsLevel        = plLevel pl
-  , gsMonsters     = plMonsters pl
-  , gsItemsOnFloor = plItems pl
-  , gsExplored     = plExplored pl
-  , gsPlayerPos    = plPlayerPos pl
-  , gsBossRoom     = plBossRoom pl
-  -- Any AI-generated flavor text from the floor we're leaving is
-  -- no longer relevant — drop it so the panel doesn't linger into
-  -- the new (old) floor. The process-local dedup set in the AI
-  -- runtime still remembers which rooms have been described, so
-  -- the old text is simply not re-fetched.
-  , gsRoomDesc        = Nothing
-  , gsRoomDescVisible = False
-  }
+loadParked pl gs =
+  -- Chests on the floor we're re-entering may have been empty
+  -- long enough to refill. Check every chest and re-roll any
+  -- whose cooldown already hit zero, threading the main RNG so
+  -- the refills are reproducible under save/load.
+  let (chests', gen') = Chest.refillChests (gsRng gs) (plChests pl)
+  in gs
+       { gsLevel        = plLevel pl
+       , gsMonsters     = plMonsters pl
+       , gsItemsOnFloor = plItems pl
+       , gsChests       = chests'
+       , gsExplored     = plExplored pl
+       , gsPlayerPos    = plPlayerPos pl
+       , gsBossRoom     = plBossRoom pl
+       , gsRng          = gen'
+       -- Any AI-generated flavor text from the floor we're leaving
+       -- is no longer relevant — drop it so the panel doesn't
+       -- linger into the new (old) floor. The process-local dedup
+       -- set in the AI runtime still remembers which rooms have
+       -- been described, so the old text is simply not re-fetched.
+       , gsRoomDesc        = Nothing
+       , gsRoomDescVisible = False
+       }
 
 -- | Freshly generate the next floor and swap it in. The new level
 --   inherits the 'LevelConfig' from 'defaultLevelConfig' except
@@ -1381,9 +1576,13 @@ generateAndEnter depth gs =
              dragon              = mkMonster Dragon dragonPos
              dl                  = D.stripStairsDown dl0
          in gs
+              -- Boss floors are deliberately chest-free: the finale
+              -- is a pure combat encounter, and an extra potion
+              -- cache would undermine the tension.
               { gsLevel        = dl
               , gsMonsters     = dragon : regulars
               , gsItemsOnFloor = keyLoot
+              , gsChests       = []
               , gsExplored     = Set.empty
               , gsPlayerPos    = start
               , gsRng          = g4
@@ -1396,13 +1595,35 @@ generateAndEnter depth gs =
        else
          let spawnRooms     = drop 1 rooms
              (monsters, g3) = spawnMonsters g2 depth spawnRooms
+             -- Chest placement rules (plan: Milestone 17, Step 1B):
+             --   * depths 2-3: no chests at all — the middle floors
+             --     stay lean so loot feels earned from monster drops
+             --     alone.
+             --   * depth 4+: 60% chance of 1-2 chests in non-starting
+             --     rooms, rolled from the generator RNG so the
+             --     outcome is save/load-deterministic.
+             occupiedForChests =
+                 start
+               : concatMap monsterTiles monsters
+               ++ map fst keyLoot
+             (chests, g4)   =
+               if depth >= 4
+                 then
+                   let (roll, g4a) = randomR (1 :: Int, 100) g3
+                   in if roll <= 60
+                        then
+                          let (n, g4b) = randomR (1 :: Int, 2) g4a
+                          in placeChests g4b dl0 (drop 1 rooms) occupiedForChests n
+                        else ([], g4a)
+                 else ([], g3)
          in gs
               { gsLevel        = dl0
               , gsMonsters     = monsters
               , gsItemsOnFloor = keyLoot
+              , gsChests       = chests
               , gsExplored     = Set.empty
               , gsPlayerPos    = start
-              , gsRng          = g3
+              , gsRng          = g4
               , gsBossRoom     = Nothing
               , gsRoomDesc        = Nothing
               , gsRoomDescVisible = False
@@ -1465,6 +1686,49 @@ placeKeyLoot gen0 reachable rooms keys =
               (rest, g3)  = go g2 ks
           in ((pos, IKey k) : rest, g3)
   in go gen0 keys
+
+-- | Place up to @n@ full chests in the given candidate rooms,
+--   avoiding any tile already occupied by a monster (per footprint),
+--   item, NPC, another chest, or terrain that isn't a plain floor
+--   (stairs, doors, walls). Each chest is seeded with a freshly
+--   rolled item from 'Chest.rollChestLoot', so newly generated
+--   floors show a full chest until the player bumps it.
+--
+--   The RNG is threaded through the picks and the loot rolls so
+--   the placement is save/load-deterministic. Returns as many
+--   chests as could be placed — if every candidate tile is
+--   occupied, fewer than @n@ (possibly zero) chests are returned.
+placeChests
+  :: StdGen
+  -> DungeonLevel
+  -> [D.Room]
+  -> [Pos]
+  -> Int
+  -> ([Chest], StdGen)
+placeChests gen0 dl rooms occupied n
+  | n <= 0 || null rooms = ([], gen0)
+  | otherwise =
+      let candidates =
+            [ p
+            | r <- rooms
+            , p <- roomPositions r
+            , case tileAt dl p of
+                Just Floor -> True
+                _          -> False
+            , p `notElem` occupied
+            ]
+      in pick gen0 candidates n
+  where
+    pick g _    0 = ([], g)
+    pick g []   _ = ([], g)
+    pick g cs   k =
+      let (i, g1)     = randomR (0, length cs - 1) g
+          pos         = cs !! i
+          rest        = take i cs ++ drop (i + 1) cs
+          (item, g2)  = Chest.rollChestLoot g1
+          chest       = Chest { chestPos = pos, chestState = ChestFull item }
+          (more, g3)  = pick g2 rest (k - 1)
+      in (chest : more, g3)
 
 -- | Every @(x, y)@ floor tile inside a room's rectangle. Rooms are
 --   carved as solid floor, so every position here is guaranteed to
@@ -1559,12 +1823,119 @@ playerAscend gs =
 
 -- | Per-turn player-state tick. Runs once at the top of
 --   'processMonsters' (the single "a turn has passed" hook) and
---   advances anything that should decay over time without being
---   tied to a specific action — currently just the dash cooldown.
+--   advances anything that should decay or accumulate over time
+--   without being tied to a specific action. Currently:
+--
+--     * dash cooldown decrement ('tickDash')
+--     * passive HP regen counter ('tickRegen')
+--     * global turn counter for run stats ('tickTurnCounter')
+--
+--   Each rule is a self-contained 'GameState -> GameState'
+--   transform; composition order is only significant for
+--   'tickTurnCounter' which must run /first/ so 'tickRegen' can
+--   see the counter advance exactly once per turn if we ever
+--   wire regen to it, and so tests that read 'gsTurnsElapsed'
+--   after a single tick see the incremented value regardless of
+--   which other rules ran.
 tickPlayerTurn :: GameState -> GameState
-tickPlayerTurn gs
+tickPlayerTurn = tickRegen . tickDash . tickTurnCounter . tickChests
+
+-- | Per-turn chest decay. Walks 'gsChests' and advances every
+--   'ChestEmpty' counter one step closer to refilling; 'ChestFull'
+--   chests are untouched. Parked floors do NOT receive this tick —
+--   'loadParked' instead performs a single bulk refill check on
+--   re-entry, which is equivalent to having ticked while away and
+--   rolling new loot on arrival.
+tickChests :: GameState -> GameState
+tickChests gs = gs { gsChests = map Chest.tickChest (gsChests gs) }
+
+-- | Isolated dash-cooldown tick. Split out of 'tickPlayerTurn' so
+--   the regen composition stays readable and so tests can cover
+--   each rule in isolation.
+tickDash :: GameState -> GameState
+tickDash gs
   | gsDashCooldown gs > 0 = gs { gsDashCooldown = gsDashCooldown gs - 1 }
   | otherwise             = gs
+
+-- | Passive HP regen: while no hostile monster sits in the
+--   player's current FOV, accumulate one "safe turn" per call; on
+--   hitting 'regenInterval' add 1 HP (capped at 'sMaxHP') and
+--   reset. A hostile becoming visible — or the counter being
+--   ticked while a hostile is already visible — immediately
+--   resets the counter so the player has to fully disengage
+--   before sustain starts again.
+--
+--   Early-outs:
+--     * full HP → no-op (don't burn the counter toward nothing)
+--     * dead or victorious → no-op (no further gameplay)
+--
+--   Hostility is currently a coarse proxy: every 'Monster' on the
+--   level is treated as hostile. NPCs live on a separate list
+--   (see 'gsNPCs') so they never reach this check.
+tickRegen :: GameState -> GameState
+tickRegen gs
+  | gsDead gs                              = gs
+  | gsVictory gs                           = gs
+  | sHP (gsPlayerStats gs) >= sMaxHP (gsPlayerStats gs) =
+      gs { gsRegenCounter = 0 }
+  | hostileVisible                         = gs { gsRegenCounter = 0 }
+  | otherwise                              =
+      let next = gsRegenCounter gs + 1
+      in if next >= regenInterval
+           then gs { gsRegenCounter = 0
+                   , gsPlayerStats  =
+                       let s = gsPlayerStats gs
+                       in s { sHP = min (sMaxHP s) (sHP s + 1) }
+                   }
+           else gs { gsRegenCounter = next }
+  where
+    vis             = gsVisible gs
+    hostileVisible  = any (\m -> any (`Set.member` vis) (monsterTiles m))
+                          (gsMonsters gs)
+
+-- | Run-stats clock. Every call advances 'gsTurnsElapsed' by one,
+--   unless the run has already ended (death or victory): once
+--   'gsFinalTurns' is 'Just', the counter is frozen at its
+--   snapshot so the victory modal and HUD keep showing the same
+--   number. A dead player's counter also stops — there's no
+--   further gameplay, and a permanently-ticking "time of death"
+--   number would look strange on the end screen.
+tickTurnCounter :: GameState -> GameState
+tickTurnCounter gs
+  | gsDead gs                       = gs
+  | Just _ <- gsFinalTurns gs       = gs
+  | otherwise =
+      gs { gsTurnsElapsed = gsTurnsElapsed gs + 1 }
+
+-- | Compute a textual "rank" label for a finished run, based on
+--   the three gamified counters: how many turns the boss kill
+--   took, how many potions were burned, and how many times the
+--   player saved. Lower is better on every axis. Intended to be
+--   displayed only on the victory modal — on an in-progress or
+--   dead run this still returns a string ("In Progress") so the
+--   caller doesn't have to special-case the Maybe.
+--
+--   Thresholds are deliberately generous: the goal is to reward
+--   the player for a clean sprint, not to make most runs look
+--   bad. Tiers and their intent:
+--
+--     * /Legendary/ — genuine speedrun: ≤ 1500 turns, ≤ 3
+--       potions, 0 saves. Hard to hit by accident.
+--     * /Heroic/ — disciplined run: ≤ 2500 turns, ≤ 6 potions,
+--       ≤ 2 saves. The "most players who finish" bucket.
+--     * /Victor/ — you finished. Shown on any victory that
+--       doesn't clear the looser bar.
+--
+--   Ranges are exclusive of the lower tier by construction — a
+--   run that qualifies for Legendary trivially qualifies for
+--   Heroic / Victor, and we pick the strictest matching label.
+runRank :: GameState -> String
+runRank gs = case gsFinalTurns gs of
+  Nothing -> if gsDead gs then "Fallen" else "In Progress"
+  Just t
+    | t <= 1500 && gsPotionsUsed gs <= 3 && gsSavesUsed gs == 0 -> "Legendary"
+    | t <= 2500 && gsPotionsUsed gs <= 6 && gsSavesUsed gs <= 2 -> "Heroic"
+    | otherwise                                                 -> "Victor"
 
 processMonsters :: GameState -> GameState
 processMonsters gs0 = go (tickPlayerTurn gs0) 0

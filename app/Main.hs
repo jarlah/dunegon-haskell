@@ -21,6 +21,7 @@ import Game.GameState
 import Game.Logic.Dungeon (defaultLevelConfig)
 import Game.Render
   ( drawGame, bossAttr, doorAttr, lockedDoorAttr, fogAttr, npcAttr
+  , chestFullAttr, chestEmptyAttr
   , saveMenuCursorAttr, saveMenuEmptyAttr
   , launchCursorAttr, launchDisabledAttr, launchTitleAttr
   )
@@ -56,6 +57,8 @@ mkApp mAudio aiRt rFlags = App
       , (bossAttr,            fg V.red)
       , (doorAttr,            fg V.brightYellow)
       , (lockedDoorAttr,      fg V.red)
+      , (chestFullAttr,       fg V.brightYellow `V.withStyle` V.bold)
+      , (chestEmptyAttr,      fg V.brightBlack)
       , (saveMenuCursorAttr,  V.defAttr `V.withStyle` V.reverseVideo)
       , (saveMenuEmptyAttr,   fg V.brightBlack)
       , (launchCursorAttr,    V.defAttr `V.withStyle` V.reverseVideo)

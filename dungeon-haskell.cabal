@@ -42,6 +42,7 @@ library
     Game.Logic.Command
     Game.Logic.Inventory
     Game.Logic.Loot
+    Game.Logic.Chest
     Game.Logic.Quest
     Game.Render
     Game.UI.Types
@@ -120,6 +121,7 @@ test-suite dungeon-haskell-test
     Game.Logic.CommandSpec
     Game.Logic.InventorySpec
     Game.Logic.LootSpec
+    Game.Logic.ChestSpec
     Game.Logic.QuestSpec
     Game.Logic.MonsterAISpec
     Game.GameStateSpec

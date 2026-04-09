@@ -190,7 +190,13 @@ routeCommand rFlags cmd = case cmd of
 --   what went wrong.
 doQuicksave :: EventM Name GameState ()
 doQuicksave = do
-  gs  <- get
+  gs0 <- get
+  -- Build the would-be-saved state with the counter bumped, so
+  -- the blob on disk already reflects this save — loading it
+  -- back gives the same counter as "kept running". Only commit
+  -- the bump to the live state if the write actually succeeds;
+  -- a failed save shouldn't nudge the run rank.
+  let gs = gs0 { gsSavesUsed = gsSavesUsed gs0 + 1 }
   res <- liftIO (Save.writeSave Save.QuickSlot gs)
   let line = case res of
         Right ()                   -> "Quicksaved."
@@ -199,7 +205,9 @@ doQuicksave = do
         Left Save.SaveWrongVersion -> "Quicksave failed: internal error (version)."
         Left (Save.SaveCorrupt e)  -> "Quicksave failed: " ++ e
         Left (Save.SaveIOError e)  -> "Quicksave failed: " ++ e
-  modify (\s -> s { gsMessages = line : gsMessages s })
+  case res of
+    Right () -> put gs { gsMessages = line : gsMessages gs }
+    Left _   -> modify (\s -> s { gsMessages = line : gsMessages s })
 
 -- | Replace the current 'GameState' with whatever is in the
 --   quicksave slot. No monster advancement, no event emission —

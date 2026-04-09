@@ -88,6 +88,12 @@ mkFixture npcs = GameState
   , gsPendingKeys    = []
   , gsLockedDoorPrompt = Nothing
   , gsDashCooldown   = 0
+  , gsRegenCounter   = 0
+  , gsTurnsElapsed   = 0
+  , gsPotionsUsed    = 0
+  , gsSavesUsed      = 0
+  , gsFinalTurns     = Nothing
+  , gsChests         = []
   }
 
 -- | A small canned quest used by the 'appendQuestToFirstNPC' tests.

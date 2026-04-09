@@ -219,11 +219,19 @@ performSaveAt sm idx = case drop idx (smSlots sm) of
   (entry : _) -> do
     gs  <- get
     -- Wipe the menu from the state *before* writing so the saved
-    -- blob doesn't ship with a stale menu snapshot baked in.
-    let gsToSave = gs { gsSaveMenu = Nothing }
+    -- blob doesn't ship with a stale menu snapshot baked in, and
+    -- bump the run-stats save counter so the persisted blob
+    -- already reflects this save (loading it back gives the same
+    -- counter as "kept running"). Commit the bump to the live
+    -- state only on success, so a failed save doesn't nudge the
+    -- rank.
+    let gsToSave = gs { gsSaveMenu   = Nothing
+                      , gsSavesUsed  = gsSavesUsed gs + 1
+                      }
     res <- liftIO (Save.writeSave (entrySlot entry) gsToSave)
     case res of
-      Right () ->
+      Right () -> do
+        put gsToSave
         closeSaveMenu ("Saved to " ++ sseSlotLabel entry ++ ".")
       Left err ->
         closeSaveMenu ("Save failed: " ++ showSaveError err)
