@@ -106,5 +106,8 @@ instance Binary SaveMetadata
 --     gained 'gsNextKeyId' / 'gsPendingKeys' / 'gsLockedDoorPrompt'
 --     for the generator, cross-level key scheduling, and the
 --     locked-door modal respectively.
+--   * @DHSAVE07@ — Dash escape. 'GameState' gained the
+--     'gsDashCooldown' field and 'GameAction' gained the 'Dash'
+--     constructor, which both change the derived Binary encoding.
 saveMagic :: BL.ByteString
-saveMagic = BL8.pack "DHSAVE06"
+saveMagic = BL8.pack "DHSAVE07"

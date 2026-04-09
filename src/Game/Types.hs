@@ -172,6 +172,12 @@ data GameAction
     --   turn (monsters act) iff a door is actually closed; the
     --   "nothing to close" failure path is a free no-op like
     --   bumping a wall.
+  | Dash !Dir
+    -- ^ escape dash: move up to a fixed number of tiles in the
+    --   given direction in a single turn, stopping early on any
+    --   obstacle (wall, closed/locked door, monster, NPC, item,
+    --   stairs). Consumes the dash cooldown; can only be used when
+    --   'gsDashCooldown' is zero.
   | Quit
   deriving (Eq, Show)
 

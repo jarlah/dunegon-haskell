@@ -261,12 +261,16 @@ drawStatus gs =
   let s       = gsPlayerStats gs
       effStats = Inv.effectiveStats s (gsInventory gs)
       dl      = gsLevel gs
+      dashStr
+        | gsDashCooldown gs <= 0 = "ready"
+        | otherwise              = show (gsDashCooldown gs)
       status  = "LVL "   ++ show (sLevel s)
              ++ "   XP: "  ++ show (sXP s) ++ "/" ++ show (xpForNextLevel (sLevel s))
              ++ "   HP: "  ++ show (sHP s) ++ "/" ++ show (sMaxHP s)
              ++ "   ATK: " ++ show (sAttack effStats)
              ++ "   DEF: " ++ show (sDefense effStats)
              ++ "   Depth: " ++ show (dlDepth dl)
+             ++ "   Dash: " ++ dashStr
              ++ (if gsDead gs then "   *** YOU DIED ***" else "")
   in str status
 
@@ -613,6 +617,10 @@ drawHelpModal wizardEnabled =
            section "Movement"
              [ "  arrow keys / hjkl    move 4-way"
              , "  y u b n              move diagonally"
+             , "  Shift + arrow        dash up to 5 tiles (60-turn"
+             , "                       cooldown; stops on any"
+             , "                       obstacle, item, or stairs)"
+             , "  HJKL YUBN            dash, vi-keys variant"
              , "  .                    wait a turn"
              ]
         ++ section "World actions"

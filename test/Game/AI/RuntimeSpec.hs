@@ -87,6 +87,7 @@ mkFixture npcs = GameState
   , gsNextKeyId      = 0
   , gsPendingKeys    = []
   , gsLockedDoorPrompt = Nothing
+  , gsDashCooldown   = 0
   }
 
 -- | A small canned quest used by the 'appendQuestToFirstNPC' tests.

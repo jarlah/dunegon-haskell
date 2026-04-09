@@ -220,6 +220,12 @@ data GameState = GameState
     --   payload is the already-formatted key name so the modal
     --   doesn't have to reach back through a 'KeyId'. 'Nothing' in
     --   every other situation.
+  , gsDashCooldown :: !Int
+    -- ^ turns remaining before the player may 'Dash' again. 0
+    --   means the dash is ready; every turn-advancing action
+    --   decrements this toward 0 (see 'processMonsters'). Set to
+    --   'dashCooldownTurns' when a dash is taken. Persisted in
+    --   saves so the cooldown survives quicksave / quickload.
   } deriving (Show)
 
 -- | Actions that need a direction supplied /after/ the initiating
@@ -355,6 +361,20 @@ data NPC = NPC
     --   it here so the player can come back later.
   } deriving (Eq, Show)
 
+-- | How far a dash moves the player, in tiles, before stopping on
+--   any obstacle (wall, closed/locked door, monster, NPC, item, or
+--   stairs). Five is enough to break line of sight against most
+--   regular monsters' 8-tile sight radius after two dashes, which
+--   is the scenario the mechanic exists to support.
+dashMaxSteps :: Int
+dashMaxSteps = 5
+
+-- | How many turns must pass after a dash before the player can
+--   dash again. Ticks in 'processMonsters', which runs once per
+--   turn-advancing action.
+dashCooldownTurns :: Int
+dashCooldownTurns = 60
+
 -- | How far the player can see, in tiles. Measured in Euclidean
 --   distance; 8 feels right for a 60×20 dungeon.
 fovRadius :: Int
@@ -369,8 +389,8 @@ monsterSightRadius = 8
 
 defaultPlayerStats :: Stats
 defaultPlayerStats = Stats
-  { sHP      = 20
-  , sMaxHP   = 20
+  { sHP      = 25
+  , sMaxHP   = 25
   , sAttack  = 6
   , sDefense = 2
   , sSpeed   = 10
@@ -416,6 +436,7 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsNextKeyId         = 0
   , gsPendingKeys       = []
   , gsLockedDoorPrompt  = Nothing
+  , gsDashCooldown      = 0
   }
 
 -- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
@@ -449,7 +470,7 @@ newGame gen0 cfg =
       (dl, startPos, rooms, mLocked, nextKey, gen2)    = D.generateLevel gen1 cfg 0
       -- Don't spawn monsters in the player's starting room.
       spawnRooms       = drop 1 rooms
-      (monsters, gen3) = spawnMonsters gen2 spawnRooms
+      (monsters, gen3) = spawnMonsters gen2 (D.lcDepth cfg) spawnRooms
       (npcs,     gen4) = spawnNPCs gen3 (D.lcDepth cfg) rooms
       -- If this floor minted a lock, the matching key is placed
       -- immediately on this same floor, inside the spawn-side
@@ -526,36 +547,49 @@ spawnNPCs gen depth rooms
               }
         in ([questMaster], gen')
 
--- | Roll 0-2 monsters per candidate room and drop them in random spots.
-spawnMonsters :: StdGen -> [D.Room] -> ([Monster], StdGen)
-spawnMonsters gen0 = foldl' step ([], gen0)
+-- | Roll 0-2 monsters per candidate room and drop them in random
+--   spots. The floor depth gates which monster kinds may appear:
+--   depth 1 is a tutorial floor with only rats and goblins, so a
+--   fresh player can find a sword and level up before meeting an
+--   orc (see 'randomMonsterKind').
+spawnMonsters :: StdGen -> Int -> [D.Room] -> ([Monster], StdGen)
+spawnMonsters gen0 depth = foldl' step ([], gen0)
   where
     step (acc, gen) r =
       let (count, g1) = randomR (0 :: Int, 2) gen
-          (ms,    g2) = spawnInRoom g1 r count
+          (ms,    g2) = spawnInRoom g1 depth r count
       in (acc ++ ms, g2)
 
-spawnInRoom :: StdGen -> D.Room -> Int -> ([Monster], StdGen)
-spawnInRoom gen0 r n
+spawnInRoom :: StdGen -> Int -> D.Room -> Int -> ([Monster], StdGen)
+spawnInRoom gen0 depth r n
   | n <= 0    = ([], gen0)
   | otherwise =
-      let (kind, g1) = randomMonsterKind gen0
+      let (kind, g1) = randomMonsterKind depth gen0
           (p,    g2) = randomRoomPos r g1
           m          = mkMonster kind p
-          (rest, g3) = spawnInRoom g2 r (n - 1)
+          (rest, g3) = spawnInRoom g2 depth r (n - 1)
       in (m : rest, g3)
 
--- | Pick a random non-boss monster kind with uniform weight.
---   Bosses are placed by 'spawnBoss', not by the regular random
---   roll, so this explicitly enumerates the small monsters.
-randomMonsterKind :: StdGen -> (MonsterKind, StdGen)
-randomMonsterKind gen0 =
-  let (i, gen1) = randomR (0 :: Int, 2) gen0
-      k = case i of
-            0 -> Rat
-            1 -> Goblin
-            _ -> Orc
-  in (k, gen1)
+-- | Pick a random non-boss monster kind. Depth 1 only rolls rats
+--   and goblins so new players have a tutorial floor to find a
+--   weapon and level up; depth 2+ opens the full roster (currently
+--   rat/goblin/orc, uniform). Bosses are placed by 'spawnBoss', not
+--   by this roll.
+randomMonsterKind :: Int -> StdGen -> (MonsterKind, StdGen)
+randomMonsterKind depth gen0
+  | depth <= 1 =
+      let (i, gen1) = randomR (0 :: Int, 1) gen0
+          k = case i of
+                0 -> Rat
+                _ -> Goblin
+      in (k, gen1)
+  | otherwise =
+      let (i, gen1) = randomR (0 :: Int, 2) gen0
+          k = case i of
+                0 -> Rat
+                1 -> Goblin
+                _ -> Orc
+      in (k, gen1)
 
 randomRoomPos :: D.Room -> StdGen -> (Pos, StdGen)
 randomRoomPos r gen0 =
@@ -759,6 +793,7 @@ applyAction act gs0 =
        GoDownStairs        -> processMonsters (playerDescend gs)
        GoUpStairs          -> processMonsters (playerAscend gs)
        CloseDoor dir       -> playerCloseDoor dir gs
+       Dash dir            -> playerDash dir gs
        Move dir            ->
          let target = gsPlayerPos gs + dirToOffset dir
          in case monsterAt target (gsMonsters gs) of
@@ -938,6 +973,78 @@ playerCloseDoor dir gs =
          pushMsg "There is no door there to close." gs
   where
     pushMsg m s = s { gsMessages = m : gsMessages s }
+
+-- | Escape dash. Moves the player up to 'dashMaxSteps' tiles in the
+--   given direction, stopping one tile before the first obstacle.
+--   An obstacle is anything that isn't 'Floor' or @Door Open@ (so
+--   walls, closed and locked doors, and stairs all stop the dash)
+--   or any tile occupied by a monster, NPC, or floor item. This
+--   keeps the dash a pure movement tool — it will never combat,
+--   open doors, descend, or pick up items behind the player's back.
+--
+--   Requires @gsDashCooldown == 0@ and at least one successful step
+--   in the given direction. On success, the player's position is
+--   updated, a message is logged, the cooldown is set to
+--   'dashCooldownTurns', and monsters take a turn. On failure (on
+--   cooldown, or blocked at the first step) the state is returned
+--   with a failure message and /no turn is spent/ — exactly like
+--   bumping a wall.
+playerDash :: Dir -> GameState -> GameState
+playerDash dir gs
+  | gsDashCooldown gs > 0 =
+      gs { gsMessages =
+             ("Dash not ready (" ++ show (gsDashCooldown gs)
+               ++ " turns).")
+             : gsMessages gs
+         }
+  | otherwise =
+      let steps  = dashSteps gs dir dashMaxSteps
+          nTaken = length steps
+      in if nTaken == 0
+           then gs { gsMessages = "You can't dash that way." : gsMessages gs }
+           else
+             let newPos = last steps
+                 gs'    = gs
+                   { gsPlayerPos    = newPos
+                   , gsDashCooldown = dashCooldownTurns
+                   , gsMessages     =
+                       ("You dash " ++ show nTaken ++ " steps.")
+                       : gsMessages gs
+                   }
+             in processMonsters gs'
+
+-- | Accumulate up to @n@ successive positions in direction @dir@
+--   starting from the player's current position. Stops as soon as
+--   the next step would land on anything other than plain floor or
+--   an open door, anything occupied by a monster / NPC, or anything
+--   with a floor item on it. Returns the list of /positions stepped
+--   onto/ (empty list = blocked at step 1).
+dashSteps :: GameState -> Dir -> Int -> [Pos]
+dashSteps gs dir n = go n (gsPlayerPos gs)
+  where
+    dl       = gsLevel gs
+    monsters = gsMonsters gs
+    npcs     = gsNPCs gs
+    items    = gsItemsOnFloor gs
+    offset   = dirToOffset dir
+
+    go 0 _ = []
+    go k p =
+      let next = p + offset
+      in if not (dashPassable next)
+           then []
+           else next : go (k - 1) next
+
+    dashPassable p =
+      case tileAt dl p of
+        Just Floor       -> clearOfActors p
+        Just (Door Open) -> clearOfActors p
+        _                -> False
+
+    clearOfActors p =
+         case monsterAt p monsters of { Just _ -> False; Nothing -> True }
+      && case npcAt     p npcs      of { Just _ -> False; Nothing -> True }
+      && not (any ((== p) . fst) items)
 
 -- | Index lookup mirroring 'monsterAt' but for NPCs.
 npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)
@@ -1269,7 +1376,7 @@ generateAndEnter depth gs =
              -- Rooms that still get regular spawns: everything except
              -- the starting room (index 0) and the boss room.
              regularRooms        = drop 1 (init rooms)
-             (regulars, g3)      = spawnMonsters g2 regularRooms
+             (regulars, g3)      = spawnMonsters g2 depth regularRooms
              (dragonPos, g4)     = pickBossTopLeft bossRoom g3
              dragon              = mkMonster Dragon dragonPos
              dl                  = D.stripStairsDown dl0
@@ -1288,7 +1395,7 @@ generateAndEnter depth gs =
               }
        else
          let spawnRooms     = drop 1 rooms
-             (monsters, g3) = spawnMonsters g2 spawnRooms
+             (monsters, g3) = spawnMonsters g2 depth spawnRooms
          in gs
               { gsLevel        = dl0
               , gsMonsters     = monsters
@@ -1450,8 +1557,17 @@ playerAscend gs =
 -- Monster turns
 ------------------------------------------------------------
 
+-- | Per-turn player-state tick. Runs once at the top of
+--   'processMonsters' (the single "a turn has passed" hook) and
+--   advances anything that should decay over time without being
+--   tied to a specific action — currently just the dash cooldown.
+tickPlayerTurn :: GameState -> GameState
+tickPlayerTurn gs
+  | gsDashCooldown gs > 0 = gs { gsDashCooldown = gsDashCooldown gs - 1 }
+  | otherwise             = gs
+
 processMonsters :: GameState -> GameState
-processMonsters gs0 = go gs0 0
+processMonsters gs0 = go (tickPlayerTurn gs0) 0
   where
     go gs i
       | gsDead gs                    = gs

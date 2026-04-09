@@ -72,6 +72,7 @@ mkFixture seed ppos pstats monsters = GameState
   , gsNextKeyId         = 0
   , gsPendingKeys       = []
   , gsLockedDoorPrompt  = Nothing
+  , gsDashCooldown      = 0
   }
 
 -- | Player stats strong enough to one-shot anything normal.
