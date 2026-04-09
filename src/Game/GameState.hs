@@ -1,5 +1,6 @@
 module Game.GameState
   ( GameState(..)
+  , DirectionalAction(..)
   , ParkedLevel(..)
   , NPC(..)
   , SaveMenu(..)
@@ -174,7 +175,26 @@ data GameState = GameState
     --   Independent from 'gsRoomDesc' so the player can dismiss a
     --   description and still have it re-appear on /next/ room
     --   entry without the old text flashing back first.
+  , gsAwaitingDirection :: !(Maybe DirectionalAction)
+    -- ^ Two-step input mode: when 'Just', the next keystroke is
+    --   consumed as a direction and used to resolve the pending
+    --   'DirectionalAction'. Set when the player presses a key
+    --   that begins a directional command (currently only @c@
+    --   for close-door); cleared when the direction is read (or
+    --   the player cancels with Esc). Not meant to be persistent
+    --   across saves — the save codec carries whatever value is
+    --   current at 'encodeSave' time, but in practice the player
+    --   saves outside any prompt.
   } deriving (Show)
+
+-- | Actions that need a direction supplied /after/ the initiating
+--   keystroke. Stored in 'gsAwaitingDirection' while the game is
+--   waiting on the second keystroke. Right now the only member is
+--   close-door; kept as its own ADT so future directional commands
+--   (kick, aim, shoot) can slot in without another GameState field.
+data DirectionalAction
+  = DirCloseDoor
+  deriving (Eq, Show)
 
 -- | UI state for the save/load picker modal. Kept entirely in
 --   pure 'GameState' so it round-trips through 'Binary' — the menu
@@ -356,6 +376,7 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsLaunchMenu     = Nothing
   , gsRoomDesc       = Nothing
   , gsRoomDescVisible = False
+  , gsAwaitingDirection = Nothing
   }
 
 -- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
@@ -628,6 +649,7 @@ applyAction act gs0 =
        UseItem idx         -> processMonsters (playerUseItem idx gs)
        GoDownStairs        -> processMonsters (playerDescend gs)
        GoUpStairs          -> processMonsters (playerAscend gs)
+       CloseDoor dir       -> playerCloseDoor dir gs
        Move dir            ->
          let target = gsPlayerPos gs + dirToOffset dir
          in case monsterAt target (gsMonsters gs) of
@@ -723,6 +745,57 @@ openDoorAt (V2 x y) gs =
        else let idx      = y * w + x
                 newTiles = dlTiles lvl V.// [(idx, Door Open)]
             in gs { gsLevel = lvl { dlTiles = newTiles } }
+
+-- | Rewrite the tile at 'p' to @Door Closed@. Mirrors 'openDoorAt'
+--   and is used by 'playerCloseDoor'. The caller is responsible
+--   for confirming the tile is currently @Door Open@ and that
+--   nothing stands on it.
+closeDoorAt :: Pos -> GameState -> GameState
+closeDoorAt (V2 x y) gs =
+  let lvl = gsLevel gs
+      w   = dlWidth  lvl
+      h   = dlHeight lvl
+  in if x < 0 || y < 0 || x >= w || y >= h
+       then gs
+       else let idx      = y * w + x
+                newTiles = dlTiles lvl V.// [(idx, Door Closed)]
+            in gs { gsLevel = lvl { dlTiles = newTiles } }
+
+-- | Attempt to close the door one step in the given direction. On
+--   success, stamp 'Door Closed', push a confirmation message, and
+--   advance monsters (a successful close costs a turn). On failure
+--   (no open door there, or something is standing on the tile),
+--   push an explanatory message and DO NOT advance monsters — the
+--   failed attempt is a free no-op like bumping a wall.
+playerCloseDoor :: Dir -> GameState -> GameState
+playerCloseDoor dir gs =
+  let target = gsPlayerPos gs + dirToOffset dir
+      occupiedByMonster = case monsterAt target (gsMonsters gs) of
+        Just _  -> True
+        Nothing -> False
+      occupiedByNpc = case npcAt target (gsNPCs gs) of
+        Just _  -> True
+        Nothing -> False
+      occupiedByPlayer = target == gsPlayerPos gs
+  in case tileAt (gsLevel gs) target of
+       Just (Door Open)
+         | occupiedByMonster || occupiedByNpc ->
+             pushMsg "Something is in the way." gs
+         | occupiedByPlayer ->
+             -- Can't happen for a Door Open adjacent to the player
+             -- unless the player is standing on the door itself,
+             -- which only happens if dir is... nothing — but be
+             -- defensive anyway.
+             pushMsg "You can't close a door you're standing on." gs
+         | otherwise ->
+             let gs' = closeDoorAt target gs
+             in processMonsters (pushMsg "You close the door." gs')
+       Just (Door Closed) ->
+         pushMsg "That door is already closed." gs
+       _ ->
+         pushMsg "There is no door there to close." gs
+  where
+    pushMsg m s = s { gsMessages = m : gsMessages s }
 
 -- | Index lookup mirroring 'monsterAt' but for NPCs.
 npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)

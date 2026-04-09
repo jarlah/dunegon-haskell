@@ -66,6 +66,7 @@ mkFixture seed ppos pstats monsters = GameState
   , gsLaunchMenu     = Nothing
   , gsRoomDesc        = Nothing
   , gsRoomDescVisible = False
+  , gsAwaitingDirection = Nothing
   }
 
 -- | Player stats strong enough to one-shot anything normal.
@@ -121,6 +122,70 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs1 = applyAction (Move N) gs0   -- opens the door
         gs2 = applyAction (Move N) gs1   -- steps onto the door
     gsPlayerPos gs2 `shouldBe` doorPos
+
+  -- ----------------------------------------------------------------
+  -- Milestone 16 follow-up: directional CloseDoor action. Uses the
+  -- same tinyRoom-with-stamped-door pattern as the bump-to-open
+  -- tests so the turn remains fully deterministic.
+  -- ----------------------------------------------------------------
+
+  it "CloseDoor closes an adjacent open door and costs a turn" $ do
+    -- Open door at (2,1), player at (1,1). A rat is placed at (3,3)
+    -- — Chebyshev 2 from the player, so monsterIntent picks MiMove,
+    -- not MiAttack, and we can detect that the monster phase ran by
+    -- observing its position change.
+    let doorPos  = V2 2 1
+        doorIdx  = 1 * 5 + 2
+        withDoor = tinyRoom
+          { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Open)] }
+        rat      = ratAt (V2 3 3)
+        gs       = (mkFixture 1 (V2 1 1) overpoweredPlayer [rat])
+                     { gsLevel = withDoor }
+        gs'      = applyAction (CloseDoor E) gs
+    tileAt (gsLevel gs') doorPos `shouldBe` Just (Door Closed)
+    -- Rat moved toward the player: a successful close advanced the turn.
+    map mPos (gsMonsters gs') /= [V2 3 3] `shouldBe` True
+
+  it "CloseDoor on an empty floor tile is a no-op that does NOT cost a turn" $ do
+    -- No door east of the player. The attempt must fail with a
+    -- message but leave monsters un-advanced.
+    let rat = ratAt (V2 3 3)
+        gs  = mkFixture 1 (V2 1 1) overpoweredPlayer [rat]
+        gs' = applyAction (CloseDoor E) gs
+    -- Monster didn't move — monster phase was skipped.
+    map mPos (gsMonsters gs') `shouldBe` [V2 3 3]
+    -- And an explanatory message landed at the top of the log.
+    case gsMessages gs' of
+      (m : _) -> m `shouldBe` "There is no door there to close."
+      []      -> expectationFailure "expected a message"
+
+  it "CloseDoor on an already-closed door is a no-op with a message" $ do
+    let doorIdx  = 1 * 5 + 2
+        withDoor = tinyRoom
+          { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Closed)] }
+        gs       = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                     { gsLevel = withDoor }
+        gs'      = applyAction (CloseDoor N) gs
+    case gsMessages gs' of
+      (m : _) -> m `shouldBe` "That door is already closed."
+      []      -> expectationFailure "expected a message"
+
+  it "CloseDoor refuses when a monster stands on the open door" $ do
+    -- Door at (2,1), open, with a rat standing on it. The close
+    -- attempt must fail with 'Something is in the way.' and the
+    -- door must remain open.
+    let doorPos  = V2 2 1
+        doorIdx  = 1 * 5 + 2
+        withDoor = tinyRoom
+          { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Open)] }
+        rat      = ratAt doorPos
+        gs       = (mkFixture 1 (V2 2 2) overpoweredPlayer [rat])
+                     { gsLevel = withDoor }
+        gs'      = applyAction (CloseDoor N) gs
+    tileAt (gsLevel gs') doorPos `shouldBe` Just (Door Open)
+    case gsMessages gs' of
+      (m : _) -> m `shouldBe` "Something is in the way."
+      []      -> expectationFailure "expected a message"
 
   it "Wait on an empty level produces no events" $ do
     let gs  = mkFixture 1 (V2 2 2) overpoweredPlayer []

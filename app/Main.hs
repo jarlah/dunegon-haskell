@@ -37,7 +37,7 @@ import Game.Render
 import qualified Game.Save as Save
 import Game.Save.Types (SaveMetadata(..))
 import Game.Types
-  ( DungeonLevel(..), GameAction(..), Inventory(..), Stats(..)
+  ( Dir(..), DungeonLevel(..), GameAction(..), Inventory(..), Stats(..)
   , Monster(..), Room(..), monsterName, roomIndexAt
   )
 import Linear (V2(..))
@@ -137,6 +137,8 @@ handleEvent mAudio aiRt (VtyEvent (V.EvKey key mods)) = do
       | Just i   <- gsDialogue gs   -> handleDialogueKey mAudio aiRt i key
       | gsQuestLogOpen gs           -> handleQuestLogKey key
       | gsInventoryOpen gs          -> handleInventoryKey mAudio key
+      | Just dirAct <- gsAwaitingDirection gs ->
+          handleAwaitingDirectionKey mAudio dirAct key
       | otherwise                   -> handleNormalKey mAudio aiRt key mods
   -- Every key event is an opportunity to swap music tracks — the
   -- player may have just walked into the boss room's line of sight,
@@ -284,6 +286,51 @@ autoCloseIfIdle npcIdx = do
     then pure ()
     else modify (\s -> s { gsDialogue = Nothing })
 
+-- | Keystrokes while the game is waiting for a direction to
+--   complete a two-step command (currently only close-door). The
+--   eight movement keys resolve to a 'Dir' and dispatch the
+--   pending 'DirectionalAction' through 'applyAction'; Esc or any
+--   other key cancels with a "Never mind." message. Monsters are
+--   only advanced on the successful-dispatch path — cancel and
+--   invalid keys are free no-ops, same as bumping a wall.
+handleAwaitingDirectionKey
+  :: Maybe Audio.AudioSystem
+  -> DirectionalAction
+  -> V.Key
+  -> EventM () GameState ()
+handleAwaitingDirectionKey mAudio dirAct key =
+  case directionFromKey key of
+    Just dir -> do
+      modify $ \gs -> gs { gsAwaitingDirection = Nothing }
+      let act = case dirAct of
+            DirCloseDoor -> CloseDoor dir
+      modify (applyAction act)
+      playEventsFor mAudio
+    Nothing  ->
+      modify $ \gs -> gs
+        { gsAwaitingDirection = Nothing
+        , gsMessages          = "Never mind." : gsMessages gs
+        }
+
+-- | Map a movement key to a 'Dir'. Used by the directional-command
+--   mode — the same keys that move the player in normal mode
+--   supply the direction for the pending command.
+directionFromKey :: V.Key -> Maybe Dir
+directionFromKey key = case key of
+  V.KUp       -> Just N
+  V.KDown     -> Just S
+  V.KLeft     -> Just W
+  V.KRight    -> Just E
+  V.KChar 'k' -> Just N
+  V.KChar 'j' -> Just S
+  V.KChar 'h' -> Just W
+  V.KChar 'l' -> Just E
+  V.KChar 'y' -> Just NW
+  V.KChar 'u' -> Just NE
+  V.KChar 'b' -> Just SW
+  V.KChar 'n' -> Just SE
+  _           -> Nothing
+
 -- | Keystrokes while the inventory modal is open. Letters @a@..@z@
 --   select the item at that index and apply its default action;
 --   'Esc' or 'i' closes the modal without doing anything. Modal
@@ -356,6 +403,15 @@ handleNormalKey _ _ (V.KChar '?') _ =
   modify (\gs -> gs { gsHelpOpen = True })
 handleNormalKey _ _ (V.KChar 'i') _ =
   modify (\gs -> gs { gsInventoryOpen = True })
+-- 'c' enters the two-step close-door mode: prompt for a direction
+-- key, then dispatch 'CloseDoor' on the next keystroke. No turn is
+-- consumed here — the turn is spent (or not) when the direction
+-- actually resolves in 'handleAwaitingDirectionKey'.
+handleNormalKey _ _ (V.KChar 'c') _ =
+  modify $ \gs -> gs
+    { gsAwaitingDirection = Just DirCloseDoor
+    , gsMessages = "Close door in which direction?" : gsMessages gs
+    }
 handleNormalKey _ _ (V.KChar 'Q') _ =
   modify (\gs -> gs { gsQuestLogOpen = True, gsQuestLogCursor = Nothing })
 -- Quicksave (F5) and quickload (F9) are free actions: they do not

@@ -139,6 +139,11 @@ data GameAction
     -- ^ descend when standing on 'StairsDown'
   | GoUpStairs
     -- ^ ascend when standing on 'StairsUp'
+  | CloseDoor !Dir
+    -- ^ close the door one step in the given direction. Costs a
+    --   turn (monsters act) iff a door is actually closed; the
+    --   "nothing to close" failure path is a free no-op like
+    --   bumping a wall.
   | Quit
   deriving (Eq, Show)
 

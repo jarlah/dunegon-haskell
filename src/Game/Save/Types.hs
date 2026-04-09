@@ -88,5 +88,8 @@ instance Binary SaveMetadata
 --     'dlRooms' (so room-entry detection has a stable index), and
 --     'GameState' gained 'gsRoomDesc' / 'gsRoomDescVisible' for the
 --     dismissable AI room-description panel.
+--   * @DHSAVE04@ — Milestone 16 follow-up. 'GameState' gained
+--     'gsAwaitingDirection' for the two-step close-door input mode,
+--     and 'GameAction' gained the 'CloseDoor' constructor.
 saveMagic :: BL.ByteString
-saveMagic = BL8.pack "DHSAVE03"
+saveMagic = BL8.pack "DHSAVE04"
