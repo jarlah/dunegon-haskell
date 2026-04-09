@@ -2,13 +2,18 @@
 #
 # Release script for dungeon-haskell.
 #
-#   usage: scripts/release.sh VERSION
+#   usage: scripts/release.sh [-y|--yes] VERSION
 #
 #   VERSION is a bare semver string like 0.1.0 (no leading "v"). The
 #   script tags the current HEAD as vVERSION, builds a portable
 #   linux/amd64 binary inside a Debian Docker container, bundles it
 #   with the game assets and a launcher script, and attaches the
 #   tarball to a GitHub release.
+#
+#   -y, --yes   skip the interactive confirmation gate before the
+#               tag push / GitHub release (apt-get style). Use when
+#               you've already built the tarball once and know
+#               exactly what's about to happen.
 #
 # Why Docker:
 #
@@ -48,9 +53,41 @@ STACK_CACHE_VOLUME="dh-stack-cache"
 # argument parsing
 #--------------------------------------------------------------
 
-VERSION="${1:-}"
+ASSUME_YES=0
+VERSION=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -y|--yes)
+      ASSUME_YES=1
+      shift
+      ;;
+    -h|--help)
+      echo "usage: $0 [-y|--yes] VERSION (e.g. 0.1.0)"
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "error: unknown option: $1" >&2
+      echo "usage: $0 [-y|--yes] VERSION" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$VERSION" ]]; then
+        echo "error: unexpected extra argument: $1" >&2
+        exit 2
+      fi
+      VERSION="$1"
+      shift
+      ;;
+  esac
+done
+
 if [[ -z "$VERSION" ]]; then
-  echo "usage: $0 VERSION (e.g. 0.1.0)" >&2
+  echo "usage: $0 [-y|--yes] VERSION (e.g. 0.1.0)" >&2
   exit 2
 fi
 
@@ -217,13 +254,17 @@ echo "  1. create git tag $TAG on $(git rev-parse --short HEAD)"
 echo "  2. push $TAG to origin"
 echo "  3. create GitHub release $TAG with $ARTIFACT attached"
 echo
-read -r -p "Proceed? [y/N] " ans
-if [[ ! "$ans" =~ ^[Yy]$ ]]; then
-  echo "aborted. $ARTIFACT is still in the current directory."
-  # Disable the trap so we don't nuke the tarball on exit; the
-  # .release-bin scratch dir can still go.
-  trap 'rm -rf "$STAGE" .release-bin' EXIT
-  exit 0
+if [[ "$ASSUME_YES" -eq 1 ]]; then
+  echo "--yes supplied; proceeding without confirmation."
+else
+  read -r -p "Proceed? [y/N] " ans
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    echo "aborted. $ARTIFACT is still in the current directory."
+    # Disable the trap so we don't nuke the tarball on exit; the
+    # .release-bin scratch dir can still go.
+    trap 'rm -rf "$STAGE" .release-bin' EXIT
+    exit 0
+  fi
 fi
 
 #--------------------------------------------------------------
