@@ -1368,6 +1368,281 @@ the new constant. No other call sites.
 
 ---
 
+### Milestone 17: Fun Pass — Sustain, Run Stats, and Bows
+
+**Goal:** Make combat feel sustainable and runs feel memorable. Combat
+currently leaves the player at 3-5 HP after fighting rats and goblins
+with no recovery path between encounters — the only HP source is
+monster drops. Dash and door-closing already enable tactical retreat
+and feel good, so the answer is to reward that retreat with time-based
+sustain instead of buffing combat directly. On top of that, we
+gamify full runs by tracking time-to-victory, potions used, and saves
+used, so beating the dragon produces a memorable score card. Bows &
+arrows are included as an optional final slice for range variety on
+deeper floors.
+
+**Non-goals / hard constraints:**
+- `playerDash` (`src/Game/GameState.hs:992-1014`) and `playerCloseDoor`
+  (`src/Game/GameState.hs:947-975`) must NOT be touched — they are the
+  tactical backbone this milestone is built around.
+- All state stays in `GameState`; pure-functional style preserved.
+- Each slice that changes the persisted shape bumps `saveMagic` in
+  `src/Game/Save/Types.hs:112-113`. `GameState` encoding is
+  auto-derived via `StandaloneDeriving` in `src/Game/Save.hs:141-207`,
+  so new fields serialize automatically once the magic is bumped.
+
+Central hook: `tickPlayerTurn` (`src/Game/GameState.hs:1564-1567`)
+already runs on every turn-advancing action. It is where regen,
+turn-counter, and chest-timer ticks belong.
+
+---
+
+#### Step 1A — Passive HP regen (combat-gated)
+
++1 HP every 12 turns while no hostile monster is in the player's FOV.
+Never exceeds `sMaxHP`. Encourages retreat-and-recover via dash + door
+close.
+
+| Task | Detail |
+|------|--------|
+| New field | `gsRegenCounter :: !Int` next to `gsDashCooldown` (~line 223); init `0` in `mkGameState` (~line 439) |
+| New constant | `regenInterval :: Int = 12` near `dashCooldownTurns` (~line 375) |
+| New helper | `tickRegen :: GameState -> GameState` — early-return on full HP, `gsDead`, or `gsVictory`; "safe" = no monster position intersects `gsVisible gs` (reuse existing FOV set); not safe → reset counter; safe → increment; at `>= regenInterval`, +1 HP and reset |
+| Wire-up | In `tickPlayerTurn`, compose `tickRegen . <existing dash tick>`. Do NOT inline into dash logic |
+
+**Tests (`test/Game/Logic/` or equivalent):**
+
+| Module | Test |
+|--------|------|
+| Regen tests | `tickRegen` with full HP is a no-op |
+| Regen tests | `tickRegen` with `gsDead` / `gsVictory` is a no-op |
+| Regen tests | 12 consecutive ticks with no monsters in FOV → +1 HP, counter reset |
+| Regen tests | Tick with a monster position inside `gsVisible` → counter reset to 0, no HP change |
+| Regen tests | Regen never exceeds `sMaxHP` (multi-tick loop stopping at cap) |
+
+---
+
+#### Step 1B — Respawning chests
+
+Time is a resource. Exactly 1 chest on depth 1; no chests on depths
+2-3; starting at depth 4, each non-boss floor has a 60% chance of 1-2
+chests in non-starting rooms. Chests refill after ~100 turns.
+
+**New module:** `src/Game/Logic/Chest.hs`
+
+```haskell
+data ChestState = ChestFull !Item | ChestEmpty !Int  -- Int = turns until refill
+data Chest      = Chest { chestPos :: !Pos, chestState :: !ChestState }
+
+chestLootTable    :: [(Int, Item)]      -- mostly HealingMinor, medium HealingMajor, rare weapon
+rollChestLoot     :: StdGen -> (Item, StdGen)
+chestRespawnTurns :: Int                -- 100
+```
+
+Reuse `pickWeighted` from `src/Game/Logic/Loot.hs:75-88` (export it from
+`Loot.hs` if currently private).
+
+**GameState changes (`src/Game/GameState.hs`):**
+
+| Task | Detail |
+|------|--------|
+| New field | `gsChests :: ![Chest]` near `gsItemsOnFloor`; init `[]` in `mkGameState` |
+| Parked level | Add `plChests :: ![Chest]` to `ParkedLevel` (~line 140-147); thread through `parkCurrent` / `loadParked` (~line 1305-1333) |
+| `newGame` | On initial depth 1 generation, roll one `ChestFull` in a non-starting room (~line 467-491) |
+| `generateAndEnter` | When `depth >= 4` and not boss floor, 60% chance place 1-2 chests via threaded RNG (~line 1348-1400) |
+| Re-entry refill | In `playerAscend` / `playerDescend` (~line 1519-1552) after `loadParked`: walk `gsChests`; any `ChestEmpty n` with `n <= 0` → re-roll via `rollChestLoot` back to `ChestFull` |
+| Tick timers | In `tickPlayerTurn`, decrement `ChestEmpty n` by 1 per turn on the *current* floor (min-clamped at 0). Parked floors don't tick — refill check happens on re-entry |
+| Bump-to-open | In `applyAction` `Move` branch (~line 797-839) before `monsterAt`/`npcAt`: detect chest at destination; on `ChestFull item` add to inventory (or drop on floor if bag full), flip to `ChestEmpty chestRespawnTurns`, push message, call `processMonsters`. Matches bump-to-open doors |
+| Render | In `src/Game/Render.hs` (~line 250) overlay `=` for `ChestFull` and dim `=` for `ChestEmpty`, rendered under items/monsters |
+| Save | Bump `saveMagic`; add `Binary`/`Generic` derivations for `Chest` and `ChestState` in `src/Game/Save.hs:141-207` |
+
+**Tests:**
+
+| Module | Test |
+|--------|------|
+| `Game.Logic.ChestSpec` | `rollChestLoot` deterministic given a fixed seed; distribution hits each table entry under many seeds |
+| `Game.Logic.ChestSpec` | Chest tick: `ChestEmpty n` → `ChestEmpty (n-1)`, clamped at 0; `ChestFull` is a no-op |
+| `Game.GameStateSpec` | Bump-to-open transition: `ChestFull item` → item in inventory + `ChestEmpty chestRespawnTurns`; full-bag path drops to `gsItemsOnFloor` instead |
+| `Game.GameStateSpec` | Re-entry refill: `ChestEmpty 0` in `plChests` becomes `ChestFull` after `loadParked`; `ChestEmpty 5` stays empty |
+| `Game.GameStateSpec` | `newGame` always seeds exactly one chest on depth 1; `generateAndEnter` places zero chests for depths 2-3 and ≥1 chests at depth 4+ only when the RNG roll succeeds (use forced seeds) |
+| `Game.SaveSpec` | Roundtrip: encode/decode a `GameState` containing both `ChestFull` and `ChestEmpty n` → equal after roundtrip |
+
+**Manual sanity (one short run):** start game, bump the depth-1 chest
+→ glyph dims, item appears. Everything else is covered by tests.
+
+---
+
+#### Step 2 — Run stats / gamification
+
+Track time-to-victory, potions used, and saves used. Show them in the
+HUD and on the victory modal with a computed "rank".
+
+**New fields (`src/Game/GameState.hs` ~line 223):**
+
+```haskell
+gsTurnsElapsed :: !Int
+gsPotionsUsed  :: !Int
+gsSavesUsed    :: !Int
+gsFinalTurns   :: !(Maybe Int)  -- frozen on victory
+```
+
+Initialize all to `0`/`Nothing` in `mkGameState` (~line 439).
+
+**Increment points:**
+
+| Location | Change |
+|----------|--------|
+| `tickPlayerTurn` | `gsTurnsElapsed += 1`, gated on `not gsDead && isNothing gsFinalTurns` so the counter freezes on death or victory |
+| `playerUseItem` `IPotion` branch (~line 1272) | `gsPotionsUsed += 1` |
+| `playerAttack` where `gsVictory` flips to `True` (~line 1206) | Set `gsFinalTurns = Just gsTurnsElapsed` |
+| `src/Game/UI/Prompt.hs:194` (`doQuicksave`) | Bump `gsSavesUsed` on in-memory state **before** `writeSave` so the saved blob records its own save |
+| `src/Game/UI/SaveMenu.hs:224` (`performSaveAt`) | Same bump-before-write pattern |
+
+**Display:**
+
+| Location | Change |
+|----------|--------|
+| `drawStatus` (`src/Game/Render.hs:259-275`) | Append `T: N` (turns — use `fromMaybe gsTurnsElapsed gsFinalTurns`) and `P: N` (potions) to the status line |
+| `drawVictoryModal` (`src/Game/Render.hs:576-587`) | Take `GameState` as param; render turns, potions used, saves used, final depth (`dlDepth (gsLevel gs)`), player level, and a computed rank. Add helper `runRank :: GameState -> String` bucketing by `(finalTurns, potionsUsed, savesUsed)` — e.g. `< 1500 turns && <= 3 potions && 0 saves` → "Legendary"; looser tiers → "Heroic", "Victor". Update `drawVictoryModal`'s call site in `drawUI` |
+
+**Save:** bump `saveMagic` again. No manual encoder changes — the four
+new fields ride on derived `Binary`.
+
+**Tests:**
+
+| Module | Test |
+|--------|------|
+| Tick tests | `tickPlayerTurn` increments `gsTurnsElapsed` exactly once per call; gated off when `gsDead` or `gsFinalTurns /= Nothing` |
+| Inventory tests | `playerUseItem` on a potion increments `gsPotionsUsed` by 1; on a weapon/armor/key, it does not |
+| Combat tests | Victory transition: flipping `gsVictory` to `True` sets `gsFinalTurns = Just gsTurnsElapsed` and subsequent ticks leave both frozen |
+| Render helper | `runRank` bucket boundaries: table-driven test over representative `(turns, potions, saves)` tuples |
+| Save tests | Save counter: calling the save helper path on an in-memory state bumps `gsSavesUsed` before serialization (test the pure state-transform, not IO) |
+| `Game.SaveSpec` | Roundtrip: encode/decode preserves all four counters |
+
+**Manual sanity:** render `drawVictoryModal` on a fixture `GameState`
+via a golden-style test rather than winning the game manually.
+
+---
+
+#### Step 3 — Bows & arrows (OPTIONAL, can be skipped)
+
+Self-contained — no step in this milestone depends on it. Melee flow
+stays unchanged. Skip this step entirely if the first three already
+feel good.
+
+**3A. Types & loot**
+
+| File | Change |
+|------|--------|
+| `src/Game/Types.hs` (~line 321-324) | Extend `Weapon`: add `Bow` |
+| `src/Game/Types.hs` `Inventory` (~line 364-368) | Add `invArrows :: !Int` (stackable ammo counter; cleaner than per-arrow slots) |
+| `src/Game/Logic/Inventory.hs` | `Bow` entry in weapon stat/damage lookup — `Bow` gives 0 melee bonus; ranged bonus comes from the fire action itself |
+| `src/Game/Logic/Loot.hs:34-58` | Add `(1, IWeapon Bow)` to Orc table and arrows drop row to Goblin + Orc |
+| `src/Game/Logic/Chest.hs` (from Step 1B) | Add `Bow` + arrow refill entries to the depth-4+ chest loot table |
+
+**3B. Fire action**
+
+| File | Change |
+|------|--------|
+| `src/Game/Types.hs` `GameAction` (~line 158-182) | Add `Fire !Dir` constructor |
+| `DirectionalAction` (`src/Game/GameState.hs:236-238`) | Add `DirFire` parallel to `DirCloseDoor` |
+| `src/Game/Input.hs` | Bind `f` to set `gsAwaitingDirection = Just DirFire`; second keystroke yields `Fire d`. Reuses the two-step input path `DirCloseDoor` already established — no new modal infra |
+| NEW `src/Game/Logic/Ranged.hs` | `fireArrow :: Dir -> GameState -> GameState`. Preconditions: `invWeapon == Just Bow`, `invArrows > 0`. Failures push a message and do NOT advance the turn (parallels dash-on-cooldown). Walk up to `arrowRange = 8` tiles along `dir`, stopping on first wall/closed-or-locked door/NPC, or first monster hit. Reuse `isWalkable`/`tileAt`. On hit: reuse `Combat.resolveAttack`. Extract a shared helper `applyHitResult :: GameState -> Monster -> CombatResult -> GameState` out of `playerAttack` (~line 1100-1224) so the kill/loot/XP/victory flow is shared (no duplicated boss-victory logic). Always decrement `invArrows`, then `processMonsters` |
+| `src/Game/GameState.hs` `applyAction` (~line 786-796) | `Fire dir -> processMonsters (fireArrow dir gs)` |
+| `src/Game/Render.hs` | Show `Bow` and arrow count in inventory modal (~line 298-319); add `f` to help modal (~line 617) |
+| Save | Bump `saveMagic` |
+
+**Tests:**
+
+| Module | Test |
+|--------|------|
+| `Game.Logic.RangedSpec` | `fireArrow` with no bow equipped → state unchanged except for a message; turn NOT advanced |
+| `Game.Logic.RangedSpec` | `fireArrow` with bow but 0 arrows → same |
+| `Game.Logic.RangedSpec` | `fireArrow` hits first monster along direction (not monsters behind it) |
+| `Game.Logic.RangedSpec` | `fireArrow` stops at walls, closed doors, locked doors, and NPCs without dealing damage |
+| `Game.Logic.RangedSpec` | Arrow decrement happens exactly once per successful fire |
+| `Game.GameStateSpec` | Shared `applyHitResult` helper: killing the dragon via ranged also sets `gsVictory` and `gsFinalTurns` (regression guard against boss-victory code path being duplicated instead of shared) |
+| `Game.SaveSpec` | Roundtrip: `Bow` weapon and `invArrows` count preserved |
+
+**Manual sanity:** one quick in-game fire against a rat to confirm the
+input binding and rendering.
+
+---
+
+#### Recommended execution order
+
+1. **Step 1A** (regen) — smallest diff, ship first, no save bump yet.
+2. **Step 2** (run stats) — save bump #1. Merge with 1A's save bump
+   if both land together.
+3. **Step 1B** (chests) — save bump #2, new `Game.Logic.Chest`
+   module.
+4. **Step 3** (bows) — save bump #3. OPTIONAL; stop here if the
+   first three already feel good.
+
+Each step is independently testable and shippable.
+
+---
+
+#### Verification strategy
+
+The pure functional design makes this easy: almost every behavior
+lives in a pure `GameState -> GameState` (or similar) function, so the
+primary verification is **unit tests** placed alongside existing tests
+in `test/`. Each step has its own test list inline above. No
+exhaustive manual playthrough required.
+
+**Unit tests cover:**
+- Tick-based logic: regen gating, chest refill timers, turn counter,
+  victory freeze.
+- State transforms: bump-to-open chests, potion/save counter
+  increments, ranged fire stop conditions.
+- Loot determinism and save roundtrips across all new fields.
+
+**Minimal manual checks (UI wiring only):**
+- HUD status line renders the new counters (one glance).
+- Chest glyph `=` appears on depth 1 (one bump).
+- Victory modal renders final stats (prefer a golden-style test on
+  `drawVictoryModal` with a fixture `GameState` over an actual boss
+  fight).
+- (Step 3) `f` + direction input path fires an arrow.
+
+**Build check:** `cabal build` and `cabal test` after each step.
+
+---
+
+#### Acceptance
+
+- After taking damage, retreating out of monster FOV and waiting ~12
+  turns restores HP by 1 (and keeps ticking).
+- Depth 1 shows exactly one chest glyph; bumping it yields a potion
+  or weapon.
+- Leaving a looted floor, playing elsewhere for 100+ turns, and
+  returning refills the chest.
+- HUD shows turns-elapsed and potions-used counters updating in
+  real time.
+- Quicksaving twice and winning the game shows `saves: 2` on the
+  victory modal along with final turns, potions used, final depth,
+  player level, and a rank string.
+- (If Step 3 shipped) equipping a bow and pressing `f` + direction
+  fires an arrow that hits the first monster in line and decrements
+  `invArrows`; firing without a bow or arrows produces a message and
+  does not advance the turn.
+
+---
+
+#### Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| Regen trivializes combat by removing the cost of fights | Interval is intentionally slow (12 turns per HP) and gated on "no hostiles in FOV" — the player still has to disengage and burn tactical turns. Tune `regenInterval` up if playtesting shows runs becoming passive |
+| Chest respawn timer feels like pointless waiting | 100 turns is roughly one floor's worth of exploration — the intended loop is "descend, explore, come back", not "sit on a chest". If it feels grindy, shorten the timer or allow partial refills |
+| Save counter discourages normal saving | That is the point — the rank is a scoreboard nudge, not a punishment. Saving still works identically; only the victory rank sees the counter |
+| Save format migrations pile up (three bumps across the milestone) | Batch 1A + 2 into a single bump if they ship together; otherwise each bump is mechanical since `StandaloneDeriving` handles encoding |
+| Bow action breaks the bump-to-attack invariant that tests rely on | `fireArrow` is a distinct action constructor; the `Move` branch is untouched. Existing melee tests should pass unchanged |
+| Extracting `applyHitResult` from `playerAttack` introduces regressions in boss-kill path | Extraction is mechanical (copy the kill/loot/XP/victory block into a helper taking the damage outcome). The existing boss-kill test and a new ranged-boss-kill test together catch any divergence |
+
+---
+
 ## Testing Strategy
 
 ### Property-Based Tests (QuickCheck)
