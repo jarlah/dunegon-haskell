@@ -20,7 +20,19 @@ levelFor seed =
       (dl, start, rooms, _)  = generateLevel gen defaultLevelConfig
   in (dl, start, rooms)
 
--- | 4-connected flood fill over walkable tiles starting from a point.
+-- | Treat a tile as reachable-by-player: walkable tiles plus
+--   closed doors, which the player can bump to open. This is the
+--   invariant the generator has to satisfy — every tile that looks
+--   like a door or floor to the player must actually be reachable,
+--   not just those the movement predicate lets them step onto.
+playerCanReach :: Tile -> Bool
+playerCanReach t = case t of
+  Door Closed -> True
+  _           -> isWalkable t
+
+-- | 4-connected flood fill over player-reachable tiles starting
+--   from a point. Passes through closed doors because the player
+--   opens them by bumping.
 floodFill :: DungeonLevel -> Pos -> Set.Set Pos
 floodFill dl start = go (Set.singleton start) [start]
   where
@@ -35,12 +47,13 @@ floodFill dl start = go (Set.singleton start) [start]
             | n <- neighbors
             , not (Set.member n visited)
             , case tileAt dl n of
-                Just t | isWalkable t -> True
-                _                     -> False
+                Just t | playerCanReach t -> True
+                _                         -> False
             ]
       in go (foldr Set.insert visited fresh) (qs ++ fresh)
 
--- | All walkable tile positions in a level.
+-- | All player-reachable tile positions in a level (floor, stairs,
+--   and doors of any state).
 walkableTiles :: DungeonLevel -> Set.Set Pos
 walkableTiles dl = Set.fromList
   [ V2 x y
@@ -48,8 +61,28 @@ walkableTiles dl = Set.fromList
   , x <- [0 .. dlWidth  dl - 1]
   , let p = V2 x y
   , Just t <- [tileAt dl p]
-  , isWalkable t
+  , playerCanReach t
   ]
+
+-- | Predicate for door tiles regardless of state. Used by the
+--   Milestone 15 invariants so tests don't have to match on
+--   individual 'DoorState' constructors.
+isDoorTile :: Tile -> Bool
+isDoorTile (Door _) = True
+isDoorTile _        = False
+
+-- | The four walls of a room as a flat list of positions. Mirrors
+--   'roomPerimeterTiles' in 'Game.Logic.Dungeon', which isn't
+--   exported; duplicating a 4-line helper here is cheaper than
+--   widening the module interface for a test.
+roomPerimeterPositions :: Room -> [Pos]
+roomPerimeterPositions (Room x y w h) =
+  let xs = [x .. x + w - 1]
+      ys = [y .. y + h - 1]
+  in    [V2 xx y             | xx <- xs]
+     ++ [V2 xx (y + h - 1)   | xx <- xs]
+     ++ [V2 x             yy | yy <- ys]
+     ++ [V2 (x + w - 1)   yy | yy <- ys]
 
 spec :: Spec
 spec = describe "Game.Logic.Dungeon.generateLevel" $ do
@@ -89,3 +122,39 @@ spec = describe "Game.Logic.Dungeon.generateLevel" $ do
     \(seed :: Int) ->
       let (dl, start, _) = levelFor seed
       in floodFill dl start === walkableTiles dl
+
+  -- ----------------------------------------------------------------
+  -- Milestone 15 / Step 1: doors at room-corridor junctions
+  -- ----------------------------------------------------------------
+
+  it "prop_everyLevelHasAtLeastOneDoor" $ property $
+    \(seed :: Int) ->
+      let (dl, _, rooms)  = levelFor seed
+          ts              = V.toList (dlTiles dl)
+          hasDoor         = any isDoorTile ts
+      in length rooms >= 2 ==> hasDoor
+
+  it "prop_noDoorOnStairs" $ property $
+    \(seed :: Int) ->
+      let (dl, start, _) = levelFor seed
+          -- The spawn tile is stairs-up; look for stairs-down too
+          -- and check neither is a door.
+          startTile      = tileAt dl start
+          downIdxs       =
+            [ V2 x y
+            | y <- [0 .. dlHeight dl - 1]
+            , x <- [0 .. dlWidth  dl - 1]
+            , tileAt dl (V2 x y) == Just StairsDown
+            ]
+          downTiles      = map (tileAt dl) downIdxs
+      in all (not . maybe False isDoorTile)
+             (startTile : downTiles)
+
+  it "prop_spawnRoomHasNoClosedDoor" $ property $
+    \(seed :: Int) ->
+      let (dl, _, rooms) = levelFor seed
+      in case rooms of
+           []      -> True
+           (r : _) ->
+             let perim = roomPerimeterPositions r
+             in all (\p -> tileAt dl p /= Just (Door Closed)) perim

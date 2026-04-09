@@ -90,6 +90,38 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs' = applyAction (Move N) gs
     gsEvents gs' `shouldBe` []
 
+  -- ----------------------------------------------------------------
+  -- Milestone 15 / Step 1: bump-to-open for closed doors. The
+  -- fixtures here stamp a closed door into tinyRoom so the turn is
+  -- fully deterministic and doesn't depend on the BSP generator.
+  -- ----------------------------------------------------------------
+
+  it "bumping a closed door opens it and the player stays put" $ do
+    -- Put a closed door at (2,1), directly north of a player at
+    -- (2,2). tinyRoom is 5 wide, so index = 1*5 + 2 = 7.
+    let doorPos  = V2 2 1
+        doorIdx  = 1 * 5 + 2
+        withDoor = tinyRoom
+          { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Closed)] }
+        gs  = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                { gsLevel = withDoor }
+        gs' = applyAction (Move N) gs
+    gsPlayerPos gs' `shouldBe` V2 2 2
+    tileAt (gsLevel gs') doorPos `shouldBe` Just (Door Open)
+
+  it "a door opened on turn N is walkable on turn N+1" $ do
+    -- Same setup, but this time take a second move step after the
+    -- bump — the player should now walk through the opened door.
+    let doorPos  = V2 2 1
+        doorIdx  = 1 * 5 + 2
+        withDoor = tinyRoom
+          { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Closed)] }
+        gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                { gsLevel = withDoor }
+        gs1 = applyAction (Move N) gs0   -- opens the door
+        gs2 = applyAction (Move N) gs1   -- steps onto the door
+    gsPlayerPos gs2 `shouldBe` doorPos
+
   it "Wait on an empty level produces no events" $ do
     let gs  = mkFixture 1 (V2 2 2) overpoweredPlayer []
         gs' = applyAction Wait gs

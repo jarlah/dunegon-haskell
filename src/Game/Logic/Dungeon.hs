@@ -118,8 +118,11 @@ generateLevel gen0 cfg =
       w = lcWidth  cfg
       h = lcHeight cfg
 
+      corridorSet :: Set.Set Pos
+      corridorSet = Set.fromList corridors
+
       floorSet :: Set.Set Pos
-      floorSet = Set.fromList (concatMap roomTiles rooms ++ corridors)
+      floorSet = Set.fromList (concatMap roomTiles rooms) `Set.union` corridorSet
 
       baseTiles = V.generate (w * h) $ \i ->
         let (y, x) = i `divMod` w
@@ -131,10 +134,24 @@ generateLevel gen0 cfg =
         [r]      -> (roomCenter r, roomCenter r)
         (r : rs) -> (roomCenter r, roomCenter (last (r : rs)))
 
+      -- Door placement: pick the tiles where a corridor crosses a
+      -- room's perimeter, roll each one Open / Closed, then stamp
+      -- them into the tile vector before stairs overwrite anything.
+      -- Spawn room perimeters are forced Open so the player can
+      -- never be softlocked into their starting area.
+      spawnPerim :: Set.Set Pos
+      spawnPerim = case rooms of
+        (r : _) -> Set.fromList (roomPerimeterTiles r)
+        []      -> Set.empty
+      candidates         = concatMap (roomDoorSites corridorSet) rooms
+      (doorStates, gen3) = rollDoors gen2 spawnPerim candidates
+
       tiles = baseTiles V.//
-        [ (posToIdx w stairsUpPos,   StairsUp)
-        , (posToIdx w stairsDownPos, StairsDown)
-        ]
+        ( [ (posToIdx w p, Door ds) | (p, ds) <- doorStates ]
+          ++ [ (posToIdx w stairsUpPos,   StairsUp)
+             , (posToIdx w stairsDownPos, StairsDown)
+             ]
+        )
 
       dl = DungeonLevel
         { dlWidth  = w
@@ -143,10 +160,82 @@ generateLevel gen0 cfg =
         , dlTiles  = tiles
         , dlRooms  = rooms
         }
-  in (dl, stairsUpPos, rooms, gen2)
+  in (dl, stairsUpPos, rooms, gen3)
 
 posToIdx :: Int -> Pos -> Int
 posToIdx w (V2 x y) = y * w + x
+
+-- | Every tile on the four walls of a room. Corners appear once —
+--   duplicates are fine for the uses below because all consumers
+--   build a 'Set' or iterate tolerantly.
+roomPerimeterTiles :: Room -> [Pos]
+roomPerimeterTiles (Room x y w h) =
+  let xs = [x .. x + w - 1]
+      ys = [y .. y + h - 1]
+  in    [V2 xx y             | xx <- xs]
+     ++ [V2 xx (y + h - 1)   | xx <- xs]
+     ++ [V2 x             yy | yy <- ys]
+     ++ [V2 (x + w - 1)   yy | yy <- ys]
+
+-- | Door sites for a single room: scan each of the four perimeter
+--   walls independently for corridor tiles and collapse runs of
+--   orthogonally-adjacent hits to a single position. Scanning per
+--   wall guarantees a corridor that runs *alongside* a wall produces
+--   one door, not a line of them.
+roomDoorSites :: Set.Set Pos -> Room -> [Pos]
+roomDoorSites corridorSet (Room x y w h) =
+  let xs = [x .. x + w - 1]
+      ys = [y .. y + h - 1]
+      hits ps = collapseRuns [p | p <- ps, Set.member p corridorSet]
+      top    = hits [V2 xx y           | xx <- xs]
+      bottom = hits [V2 xx (y + h - 1) | xx <- xs]
+      left   = hits [V2 x           yy | yy <- ys]
+      right  = hits [V2 (x + w - 1) yy | yy <- ys]
+  in top ++ bottom ++ left ++ right
+
+-- | Walk a list of positions in order and collapse runs of
+--   orthogonally-adjacent positions to the run's midpoint. Callers
+--   pass positions that are already sorted along one axis (a row or
+--   a column), so adjacency reduces to "previous position is one
+--   step away along that axis."
+collapseRuns :: [Pos] -> [Pos]
+collapseRuns = map runMid . groupRuns
+  where
+    groupRuns []       = []
+    groupRuns (p : ps) =
+      let (run, rest) = spanAdj p ps
+      in (p : run) : groupRuns rest
+
+    spanAdj _ [] = ([], [])
+    spanAdj prev (q : qs)
+      | adjacent prev q =
+          let (run, rest) = spanAdj q qs
+          in (q : run, rest)
+      | otherwise       = ([], q : qs)
+
+    adjacent (V2 a b) (V2 c d) =
+      (a == c && abs (b - d) == 1) || (b == d && abs (a - c) == 1)
+
+    runMid run = run !! (length run `div` 2)
+
+-- | Roll the state of every candidate door site from the level
+--   'StdGen'. Sites on the spawn room's perimeter are always 'Open';
+--   every other site is 'Open' with probability ~0.7 and 'Closed'
+--   with probability ~0.3. Milestone 15 Step 2 will extend the roll
+--   to cover 'Locked' once keys are in the game.
+rollDoors :: StdGen -> Set.Set Pos -> [Pos] -> ([(Pos, DoorState)], StdGen)
+rollDoors gen0 spawnPerim = go gen0
+  where
+    go g [] = ([], g)
+    go g (p : ps) =
+      let (ds, g') =
+            if Set.member p spawnPerim
+              then (Open, g)
+              else let (r, g1) = randomR (1 :: Int, 10) g
+                   in (if r <= 7 then Open else Closed, g1)
+          (rest, g'') = go g' ps
+      in ((p, ds) : rest, g'')
+
 
 -- | Turn every 'StairsDown' tile on a level into plain 'Floor'.
 --   Used by the boss floor: the run can't progress deeper than the

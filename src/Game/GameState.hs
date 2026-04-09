@@ -628,10 +628,20 @@ applyAction act gs0 =
                 Just (i, _) ->
                   -- Bump-to-talk: open dialogue, monsters do NOT act.
                   playerTalk i gs
-                Nothing     ->
-                  case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
-                    Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
-                    Nothing     -> gs  -- blocked; turn does not advance
+                Nothing     -> case tileAt (gsLevel gs) target of
+                  -- Bump-to-open: spending the turn opens a closed
+                  -- door in place. The player does not move this
+                  -- turn (just like bumping a wall), but the turn
+                  -- *does* advance so monsters react.
+                  Just (Door Closed) ->
+                    let gs' = openDoorAt target gs
+                        msg = "You open the door."
+                    in processMonsters
+                         (gs' { gsMessages = msg : gsMessages gs' })
+                  _ ->
+                    case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
+                      Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
+                      Nothing     -> gs  -- blocked; turn does not advance
 
 -- | Append events to the running per-turn log.
 emit :: GameState -> [GameEvent] -> GameState
@@ -689,6 +699,22 @@ monsterAt p = go 0
     go i (m : rest)
       | monsterOccupies m p = Just (i, m)
       | otherwise           = go (i + 1) rest
+
+-- | Rewrite the tile at 'p' to @Door Open@. Used by the bump-to-open
+--   path in 'applyAction' so a closed door becomes walkable on the
+--   same turn the player tried to step onto it. Out-of-bounds
+--   positions are a no-op (the caller only invokes this after
+--   'tileAt' has already confirmed the tile is @Door Closed@).
+openDoorAt :: Pos -> GameState -> GameState
+openDoorAt (V2 x y) gs =
+  let lvl = gsLevel gs
+      w   = dlWidth  lvl
+      h   = dlHeight lvl
+  in if x < 0 || y < 0 || x >= w || y >= h
+       then gs
+       else let idx      = y * w + x
+                newTiles = dlTiles lvl V.// [(idx, Door Open)]
+            in gs { gsLevel = lvl { dlTiles = newTiles } }
 
 -- | Index lookup mirroring 'monsterAt' but for NPCs.
 npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)
