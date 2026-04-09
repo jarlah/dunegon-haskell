@@ -58,6 +58,7 @@ library
     Game.AI.LevelContent
     Game.AI.Mock
     Game.AI.Async
+    Game.AI.Runtime
   build-depends:
     , linear
     , vector
@@ -123,6 +124,7 @@ test-suite dungeon-haskell-test
     Game.AI.ClientSpec
     Game.AI.QuestGenSpec
     Game.AI.MockSpec
+    Game.AI.RuntimeSpec
   build-depends:
     , dungeon-haskell
     , hspec
