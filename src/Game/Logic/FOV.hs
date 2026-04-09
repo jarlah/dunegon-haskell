@@ -11,6 +11,7 @@
 --   or any IO.
 module Game.Logic.FOV
   ( computeFOV
+  , hasLineOfSight
   , transparent
   ) where
 
@@ -31,31 +32,19 @@ transparent (Door Closed) = False
 transparent StairsDown    = True
 transparent StairsUp      = True
 
--- | All tile positions visible from @origin@ within the given
---   Euclidean radius. The origin itself is always visible. A wall
---   at the far end of an otherwise-clear line of sight IS visible
---   (so the player can see the walls they're looking at).
-computeFOV :: DungeonLevel -> Pos -> Int -> Set Pos
-computeFOV dl origin@(V2 ox oy) radius =
-  Set.fromList $ origin :
-    [ p
-    | dy <- [-radius .. radius]
-    , dx <- [-radius .. radius]
-    , dx * dx + dy * dy <= radius * radius
-    , let p = V2 (ox + dx) (oy + dy)
-    , p /= origin
-    , inBounds p
-    , canSee p
-    ]
+-- | Symmetric Bresenham line-of-sight check: does 'a' have a clear
+--   sightline to 'b'? @A@ sees @B@ if either the line from A→B OR
+--   the line from B→A is unobstructed (every strictly-interior tile
+--   is 'transparent'). Symmetrising the check makes LOS commutative
+--   regardless of which endpoint Bresenham favors at diagonal ties —
+--   @prop_fovSymmetry@ depends on this.
+--
+--   Used by both 'computeFOV' (player visibility) and
+--   'Game.Logic.MonsterAI.monsterIntent' (monster visibility).
+hasLineOfSight :: DungeonLevel -> Pos -> Pos -> Bool
+hasLineOfSight dl a b =
+  losClear (bresenham a b) || losClear (bresenham b a)
   where
-    inBounds (V2 x y) =
-      x >= 0 && y >= 0 && x < dlWidth dl && y < dlHeight dl
-
-    -- Symmetric line-of-sight check.
-    canSee target =
-      losClear (bresenham origin target) ||
-      losClear (bresenham target origin)
-
     -- A bresenham line is "clear" for FOV purposes if every tile
     -- STRICTLY between the start and the end is transparent. The
     -- start is the viewer (trivially fine) and the end is the
@@ -70,6 +59,26 @@ computeFOV dl origin@(V2 ox oy) radius =
       Just t | transparent t -> checkMiddle rest
       _                      -> False
     checkMiddle []         = True
+
+-- | All tile positions visible from @origin@ within the given
+--   Euclidean radius. The origin itself is always visible. A wall
+--   at the far end of an otherwise-clear line of sight IS visible
+--   (so the player can see the walls they're looking at).
+computeFOV :: DungeonLevel -> Pos -> Int -> Set Pos
+computeFOV dl origin@(V2 ox oy) radius =
+  Set.fromList $ origin :
+    [ p
+    | dy <- [-radius .. radius]
+    , dx <- [-radius .. radius]
+    , dx * dx + dy * dy <= radius * radius
+    , let p = V2 (ox + dx) (oy + dy)
+    , p /= origin
+    , inBounds p
+    , hasLineOfSight dl origin p
+    ]
+  where
+    inBounds (V2 x y) =
+      x >= 0 && y >= 0 && x < dlWidth dl && y < dlHeight dl
 
 -- | Bresenham's line algorithm in 2D, integer grid, endpoints
 --   inclusive. Returns the list of cells from the start to the end,

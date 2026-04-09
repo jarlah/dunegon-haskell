@@ -20,6 +20,7 @@ module Game.GameState
   , turnInQuest
   , shouldPlayBossMusic
   , fovRadius
+  , monsterSightRadius
   ) where
 
 import qualified Data.Map.Strict as Map
@@ -303,6 +304,13 @@ data NPC = NPC
 --   distance; 8 feels right for a 60×20 dungeon.
 fovRadius :: Int
 fovRadius = 8
+
+-- | How far a monster can see, in tiles. Kept symmetric with
+--   'fovRadius' so "if I can see it, it can see me" — Milestone 16
+--   can retune if playtesting shows the player needs a scouting
+--   advantage. Measured in Euclidean distance, matching the FOV.
+monsterSightRadius :: Int
+monsterSightRadius = 8
 
 defaultPlayerStats :: Stats
 defaultPlayerStats = Stats
@@ -1155,7 +1163,7 @@ processMonster gs i m =
         | (j, x) <- zip [0 :: Int ..] (gsMonsters gs)
         , j /= i
         ]
-      intent    = monsterIntent dl playerPos others m
+      intent    = monsterIntent dl playerPos others monsterSightRadius m
   in case intent of
        MiWait -> gs
        MiMove newPos ->

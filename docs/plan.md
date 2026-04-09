@@ -1268,6 +1268,106 @@ monsters), reveals the trap glyph, and writes the correct event to
 
 ---
 
+### Milestone 16: Monster vision and stealth
+
+**Goal:** Monsters only pursue and attack the player when they can
+actually see them. Today `Game.Logic.MonsterAI.monsterIntent` is
+omniscient — every monster on the level homes in on `gsPlayerPos`
+regardless of walls, closed doors, or distance. The `transparent`
+predicate in `Game.Logic.FOV` already classifies closed doors as
+opaque for the player's FOV, but the monster AI never consults it.
+This milestone wires monsters through the same line-of-sight check,
+so closed doors and rooms become genuine tactical cover.
+
+**Out of scope** (follow-ups if the "fish in a barrel" fix feels too
+simple in play):
+- Monster *memory* — "last seen" position so a monster that lost
+  sight of the player still walks to where they vanished
+- Sound-based alerts — combat or door-bumping noise waking nearby
+  monsters even outside line of sight
+- Per-monster sight radius (rats see less than dragons)
+- Monsters opening doors
+
+---
+
+#### Step 1 — Extract a line-of-sight primitive
+
+The symmetric Bresenham check that powers `computeFOV` is currently
+a local `canSee` / `losClear` pair inside `Game.Logic.FOV`. Extract
+it into a top-level, exported function:
+
+```haskell
+-- Game.Logic.FOV
+hasLineOfSight :: DungeonLevel -> Pos -> Pos -> Bool
+```
+
+`computeFOV` keeps working — it just calls the extracted function
+instead of inlining the check. No FOV behaviour change for the
+player.
+
+---
+
+#### Step 2 — Gate `monsterIntent` on visibility
+
+| Task | Detail |
+|------|--------|
+| New constant | `monsterSightRadius :: Int = 8` in `Game.GameState` next to `fovRadius`. Start symmetric with the player so "if I can see it, it can see me" — gameplay can retune later without touching the pipeline |
+| New parameter | `monsterIntent :: DungeonLevel -> Pos -> [Pos] -> Int -> Monster -> MonsterIntent` — the new `Int` is the sight radius. Passing it in keeps `MonsterAI` pure and the radius configurable from `GameState` |
+| Visibility check | Before the existing attack/move/wait dispatch, compute `canSeePlayer`: any footprint tile of the monster is within `sightRadius` (Euclidean, matching `computeFOV`) **and** has a clear line of sight to the player via `hasLineOfSight`. Multi-tile bosses use an `any` over their footprint so the dragon is as perceptive as its largest silhouette |
+| Short-circuit | If `canSeePlayer` is false, return `MiWait` immediately. The attack and move branches stay behind the check, which is why "adjacent through a wall" (an illegal edge case anyway) no longer attacks |
+
+The attack branch survives for normal adjacent combat because
+`hasLineOfSight` is trivially clear between Chebyshev-1 tiles (no
+middle tiles for the Bresenham line to check).
+
+---
+
+#### Step 3 — Wire the radius through `processMonster`
+
+`Game.GameState.processMonster` currently calls
+`monsterIntent dl playerPos others m`. Change it to
+`monsterIntent dl playerPos others monsterSightRadius m` and import
+the new constant. No other call sites.
+
+---
+
+#### Step 4 — Tests
+
+| Module | Test |
+|--------|------|
+| `Game.Logic.FOVSpec` | `hasLineOfSight` is clear through an open room, blocked by a wall between the endpoints, blocked by a closed door, clear through an open door. Symmetry: `hasLineOfSight dl a b == hasLineOfSight dl b a` |
+| `Game.Logic.MonsterAISpec` | Existing `MiMove` / `MiAttack` tests pick up the new `sightRadius` parameter — they already run in an open 10x10 room so LOS is trivially clear; just thread the parameter through |
+| `Game.Logic.MonsterAISpec` | **New:** monster in a separate sub-room with a `Door Closed` between it and the player → `MiWait` |
+| `Game.Logic.MonsterAISpec` | **New:** same layout with `Door Open` → `MiMove` toward the player |
+| `Game.Logic.MonsterAISpec` | **New:** monster in LOS but Euclidean distance > `sightRadius` → `MiWait` (was `MiMove` pre-M16) |
+| `Game.GameStateSpec` | `processMonster` integration test: a rat placed in an adjacent closed-off sub-room does not move on the player's turn |
+
+---
+
+#### Acceptance
+
+- A monster on the other side of a closed door stands still turn
+  after turn while the player moves in the adjacent room.
+- Opening the door causes the monster to begin pursuing on the next
+  player turn.
+- Monsters farther than `monsterSightRadius` from the player take no
+  pursuit action (previous behaviour: global pursuit).
+- All pre-M16 tests still pass after the `monsterIntent` signature
+  change.
+
+---
+
+#### Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| Levels feel empty because the player can wall-hack their way past every monster | Follow-up milestone for monster memory + sound alerts; document the limitation in the README so the current behaviour is a known, bounded simplification |
+| Breaking change to `monsterIntent` ripples through callers | Only one caller (`processMonster`) and one test module touch the function; the change is mechanical |
+| Bosses become trivial by kiting around corners | The dragon's footprint is large enough that at least one of its tiles usually has LOS; if playtesting shows the boss losing sight too easily, raise `monsterSightRadius` for boss encounters specifically (single-line change) |
+| Performance regression from per-monster LOS checks | One Bresenham walk per monster per turn is O(max dx dy) ≈ 20 operations at worst; with ≤ 10 monsters on a level this is ~200 ops/turn, well below anything measurable |
+
+---
+
 ## Testing Strategy
 
 ### Property-Based Tests (QuickCheck)

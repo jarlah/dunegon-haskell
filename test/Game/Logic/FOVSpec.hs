@@ -13,7 +13,7 @@ import Linear (V2(..))
 import Test.Hspec
 import Test.QuickCheck
 
-import Game.Logic.FOV (computeFOV)
+import Game.Logic.FOV (computeFOV, hasLineOfSight)
 import Game.Types
 
 -- | An open @w × h@ room with walls only on the outer edge. Floor
@@ -111,3 +111,50 @@ spec = describe "Game.Logic.FOV.computeFOV" $ do
           inBounds (V2 x y) =
             x >= 0 && y >= 0 && x < dlWidth dl && y < dlHeight dl
       in all inBounds (Set.toList fov)
+
+  describe "hasLineOfSight" $ do
+    -- An 11x5 level with a single Door tile at (5,2). The door
+    -- state is parameterised so each test can pick open vs closed.
+    -- Everything else on row 2 is floor, so a horizontal line
+    -- from the west half to the east half must pass through the
+    -- door — closed blocks it, open admits it.
+    let corridorWith doorTile = DungeonLevel
+          { dlWidth  = 11
+          , dlHeight = 5
+          , dlDepth  = 1
+          , dlTiles  = V.generate (11 * 5) $ \i ->
+              let (y, x) = i `divMod` 11
+              in if y == 0 || y == 4 || x == 0 || x == 10
+                   then Wall
+                   else if y == 2 && x == 5
+                     then doorTile
+                     else Floor
+          , dlRooms  = [Room 1 1 9 3]
+          }
+
+    it "is clear across an open room" $ do
+      let dl = openRoom 11 11
+      hasLineOfSight dl (V2 1 1) (V2 9 9) `shouldBe` True
+
+    it "is blocked by an intervening wall" $ do
+      -- roomWithPillar has a wall at (5,3). A line from (5,5) to
+      -- (5,1) passes through (5,3), so LOS is blocked.
+      hasLineOfSight roomWithPillar (V2 5 5) (V2 5 1) `shouldBe` False
+
+    it "is blocked by a closed door on the line" $
+      hasLineOfSight (corridorWith (Door Closed)) (V2 2 2) (V2 8 2)
+        `shouldBe` False
+
+    it "is clear through an open door on the line" $
+      hasLineOfSight (corridorWith (Door Open)) (V2 2 2) (V2 8 2)
+        `shouldBe` True
+
+    it "is symmetric" $ property $
+      forAll (choose (1, 9)) $ \ax ->
+      forAll (choose (1, 9)) $ \ay ->
+      forAll (choose (1, 9)) $ \bx ->
+      forAll (choose (1, 9)) $ \by ->
+        let dl = roomWithPillar
+            a  = V2 ax ay
+            b  = V2 bx by
+        in hasLineOfSight dl a b === hasLineOfSight dl b a
