@@ -31,11 +31,12 @@ import Game.Logic.Command (Command(..), parseCommand, isCheatCommand)
 import Game.Logic.Dungeon (defaultLevelConfig)
 import Game.Logic.Quest (Quest(..), QuestStatus(..), qName)
 import Game.Render
-  ( drawGame, Name (..), bossAttr, doorAttr, fogAttr, npcAttr
+  ( drawGame, bossAttr, doorAttr, fogAttr, npcAttr
   , saveMenuCursorAttr, saveMenuEmptyAttr
   , launchCursorAttr, launchDisabledAttr, launchTitleAttr
   )
 import qualified Game.Save as Save
+import Game.UI.Types (Name (..), RuntimeFlags (..), parseArgs)
 import Game.Save.Types (SaveMetadata(..))
 import Game.Types
   ( Dir(..), DungeonLevel(..), GameAction(..), Inventory(..), Stats(..)
@@ -85,24 +86,6 @@ data AIRuntime = AIRuntime
     --   re-ask the LLM. A save/load round trip resets this because
     --   the IORef is process-local, not serialized.
   }
-
--- | Process-wide runtime capability flags that come from the
---   command line rather than from persistent state. Bundled into a
---   record so the event loop only has to close over one value, and
---   so new flags can be added without rewiring every handler.
---
---   Deliberately not in 'GameState' — these are capabilities of
---   *this* process launch, not of the saved game, and they must not
---   round-trip through 'Binary'. A player running without
---   @--wizard@ should not be able to invoke cheats just because
---   they loaded a save that was written by a wizard session.
-data RuntimeFlags = RuntimeFlags
-  { rfWizardEnabled :: !Bool
-    -- ^ 'True' iff the game was launched with the @--wizard@ (or
-    --   @-w@) flag. Gates the cheat / wizard slash commands and
-    --   controls whether cheat-tainted saves are visible in the
-    --   load menu.
-  } deriving (Eq, Show)
 
 -- | The Brick custom-event type for this app. 'AIResult' carries a
 --   completed 'AIResponse' from the worker thread back to the main
@@ -1248,16 +1231,3 @@ main = do
       _ <- customMain initialVty buildVty (Just aiChan)
              (mkApp mAudio aiRt rFlags) initialState
       pure ()
-
--- | Parse the CLI flags we care about out of a raw 'getArgs'
---   vector. Currently a single boolean — @--wizard@ / @-w@
---   enables cheats for this process — but kept as a dedicated
---   helper so adding more flags is a local change. Unknown
---   arguments are silently ignored; there is no plan for positional
---   arguments, and a strict parser would turn a user's typo into
---   a startup crash.
-parseArgs :: [String] -> RuntimeFlags
-parseArgs args = RuntimeFlags
-  { rfWizardEnabled =
-      any (`elem` ["--wizard", "-w", "--cheats"]) args
-  }

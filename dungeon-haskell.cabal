@@ -44,6 +44,7 @@ library
     Game.Logic.Loot
     Game.Logic.Quest
     Game.Render
+    Game.UI.Types
     Game.Input
     Game.Audio
     Game.Save.Types
@@ -117,6 +118,7 @@ test-suite dungeon-haskell-test
     Game.Logic.MonsterAISpec
     Game.GameStateSpec
     Game.SaveSpec
+    Game.UI.TypesSpec
     Game.ConfigSpec
     Game.AI.ClientSpec
     Game.AI.QuestGenSpec
