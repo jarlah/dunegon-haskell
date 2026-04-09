@@ -45,6 +45,7 @@ library
     Game.Logic.Quest
     Game.Render
     Game.UI.Types
+    Game.UI.SaveMenu
     Game.Input
     Game.Audio
     Game.Save.Types
@@ -120,6 +121,7 @@ test-suite dungeon-haskell-test
     Game.GameStateSpec
     Game.SaveSpec
     Game.UI.TypesSpec
+    Game.UI.SaveMenuSpec
     Game.ConfigSpec
     Game.AI.ClientSpec
     Game.AI.QuestGenSpec
