@@ -49,6 +49,7 @@ library
     Game.UI.Launch
     Game.UI.Modals
     Game.UI.Prompt
+    Game.UI.Normal
     Game.Input
     Game.Audio
     Game.Save.Types
