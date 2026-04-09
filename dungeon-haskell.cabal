@@ -114,6 +114,7 @@ test-suite dungeon-haskell-test
     Game.Logic.InventorySpec
     Game.Logic.LootSpec
     Game.Logic.QuestSpec
+    Game.Logic.MonsterAISpec
     Game.GameStateSpec
     Game.SaveSpec
     Game.ConfigSpec

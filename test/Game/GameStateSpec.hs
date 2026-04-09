@@ -13,6 +13,7 @@ import Test.Hspec
 
 import Game.GameState
 import Game.Logic.Command (Command(..))
+import Game.Logic.MonsterAI (chebyshev)
 import Game.Logic.Quest
   ( Quest(..), QuestGoal(..), QuestStatus(..), mkQuest )
 import Game.Save (decodeSave, encodeSave)
@@ -130,6 +131,53 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
     let gs  = mkFixture 99 (V2 2 2) overpoweredPlayer []
         gs' = applyAction Wait gs
     EvAttackHit `elem` gsEvents gs' `shouldBe` False
+
+  -- ----------------------------------------------------------------
+  -- Monster turns: exercise the full pipeline through
+  -- processMonsters -> monsterIntent -> monsterAttack. Existing
+  -- tests mostly kill the rat in one hit, so the rat never gets a
+  -- turn; these fill that gap by letting the player skip their
+  -- own attack and observing what the rat does next.
+  -- ----------------------------------------------------------------
+
+  it "a non-adjacent rat advances toward the player on Wait" $ do
+    -- Player at (1,1), rat at (3,3) — Chebyshev distance 2. After
+    -- a Wait the rat's monsterIntent should return MiMove and the
+    -- new position should be Chebyshev 1 from the player. No dice
+    -- are involved in the movement path, so this is deterministic.
+    let rat = ratAt (V2 3 3)
+        gs  = mkFixture 1 (V2 1 1) overpoweredPlayer [rat]
+        gs' = applyAction Wait gs
+        newRatPos = case gsMonsters gs' of
+          (r : _) -> mPos r
+          []      -> error "rat vanished unexpectedly"
+    -- The rat should have stepped toward the player. Any of the
+    -- three diagonal/ortho steps toward (1,1) reduces Chebyshev
+    -- to 1; (2,2) is the preferred pick but (2,3)/(3,2) also work
+    -- depending on how bestNeighbor breaks ties.
+    chebyshev newRatPos (V2 1 1) `shouldBe` 1
+
+  it "an adjacent rat eventually hurts the player across several Waits" $ do
+    -- Player at (2,2), rat at (2,1). On each Wait the rat rolls an
+    -- attack from 'gsRng'. With a 0-defense player, the rat's hit
+    -- threshold sits at 8 on a d20 — roughly 65% hit per turn — so
+    -- *some* Wait in a handful of turns will land. Rather than
+    -- pinning a specific seed (and being brittle against any
+    -- future RNG-consumption reshuffle), we iterate Waits and
+    -- assert that HP drops within a bounded window. The odds of
+    -- 12 consecutive misses at 35% each are < 1e-5, which is fine
+    -- for a deterministic test seed. This covers the full
+    -- processMonster -> monsterIntent (MiAttack) -> monsterAttack
+    -- pipeline including the EvPlayerHurt emission path.
+    let weakPlayer = overpoweredPlayer { sHP = 20, sDefense = 0 }
+        rat        = ratAt (V2 2 1)
+        gs0        = mkFixture 1 (V2 2 2) weakPlayer [rat]
+        gss        = iterate (applyAction Wait) gs0
+        damaged    = take 12 (drop 1 gss)
+        anyHit     = any (\g -> sHP (gsPlayerStats g) < sHP weakPlayer) damaged
+        anyEvent   = any (\g -> EvPlayerHurt `elem` gsEvents g) damaged
+    anyHit   `shouldBe` True
+    anyEvent `shouldBe` True
 
   -- ----------------------------------------------------------------
   -- M10: NPCs and dialogue

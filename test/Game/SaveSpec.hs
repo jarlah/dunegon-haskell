@@ -111,6 +111,25 @@ spec = do
         Right ms -> length ms `shouldBe` 3
         Left e   -> expectationFailure ("listSaves failed: " ++ show e)
 
+    it "listSaves populates SaveMetadata fields from the decoded save" $ do
+      -- The SaveMetadata fields are built lazily, so a test that
+      -- only checks the list length never forces them. This test
+      -- deliberately reads smSlot / smDepth / smPlayerLvl /
+      -- smPlayerHP off a returned entry so the record-construction
+      -- path in 'readMetaWithMTime' is actually evaluated. Uses
+      -- 'hardcodedInitialState', whose level is depth 1 and whose
+      -- player is level 1 with 20 HP via 'defaultPlayerStats'.
+      _ <- writeSave (NumberedSlot 1) hardcodedInitialState
+      res <- listSaves
+      case res of
+        Left e   -> expectationFailure ("listSaves failed: " ++ show e)
+        Right [] -> expectationFailure "listSaves returned no entries"
+        Right (md : _) -> do
+          smSlot      md `shouldBe` NumberedSlot 1
+          smDepth     md `shouldBe` 1
+          smPlayerLvl md `shouldBe` 1
+          smPlayerHP  md `shouldBe` 20
+
     it "listSaves skips stray files it doesn't recognize" $ do
       _ <- writeSave QuickSlot hardcodedInitialState
       -- Drop a junk file into the save dir. Listing must still
