@@ -161,19 +161,51 @@ drawPromptLine gs = case gsPrompt gs of
     let line = "> " ++ buf
     in showCursor NameDefault (Location (length line, 0)) $ str line
 
--- | Render the dungeon one row at a time. Each cell is classified
---   into one of three states: visible (normal), explored-but-not-
---   visible (dim fog), or unseen (blank).
+-- | Render the dungeon as a player-centered scrolling viewport.
+--
+--   The widget is 'Greedy' in both dimensions so Brick gives it
+--   whatever space is left after the fixed-height status / prompt /
+--   message widgets below it claim theirs. At render time we open
+--   the Brick context for the actual available pixel dimensions and
+--   compute the camera's top-left corner so the player glyph sits
+--   at the visual center. There is no camera state on 'GameState':
+--   the camera is a pure function of 'gsPlayerPos' and terminal
+--   size, so moving the player on frame N automatically scrolls the
+--   map on frame N+1.
+--
+--   Tiles outside the level bounds render as blank space — this
+--   produces the "edge of the world" look when the player walks
+--   toward a wall near the map's perimeter, matching the
+--   "always-centered" camera policy.
 drawGrid :: GameState -> Widget Name
-drawGrid gs =
-  let dl  = gsLevel gs
-      vis = gsVisible  gs
-      exp_ = gsExplored gs
-  in vBox
-       [ hBox
-           [ drawCell gs vis exp_ (V2 x y)
-           | x <- [0 .. dlWidth dl - 1] ]
-       | y <- [0 .. dlHeight dl - 1] ]
+drawGrid gs = Widget Greedy Greedy $ do
+  ctx <- getContext
+  let viewW = availWidth  ctx
+      viewH = availHeight ctx
+      dl    = gsLevel   gs
+      vis   = gsVisible gs
+      exp_  = gsExplored gs
+      V2 px py = gsPlayerPos gs
+      -- Top-left of the camera window. Integer-divide biases the
+      -- player one column/row off-center on even dimensions, which
+      -- is fine and matches how every other roguelike does it.
+      camX  = px - viewW `div` 2
+      camY  = py - viewH `div` 2
+  render $ vBox
+    [ hBox
+        [ drawCellAt gs dl vis exp_ (V2 x y)
+        | x <- [camX .. camX + viewW - 1] ]
+    | y <- [camY .. camY + viewH - 1] ]
+
+-- | Like 'drawCell', but returns a blank cell when the requested
+--   position is outside the level's tile grid. Used by 'drawGrid'
+--   to paint the void outside the dungeon once the camera window
+--   overlaps the map boundary.
+drawCellAt
+  :: GameState -> DungeonLevel -> Set Pos -> Set Pos -> Pos -> Widget Name
+drawCellAt gs dl vis exp_ pos@(V2 x y)
+  | x < 0 || y < 0 || x >= dlWidth dl || y >= dlHeight dl = str " "
+  | otherwise = drawCell gs vis exp_ pos
 
 drawCell :: GameState -> Set Pos -> Set Pos -> Pos -> Widget Name
 drawCell gs vis exp_ pos

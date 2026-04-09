@@ -34,9 +34,9 @@ data LevelConfig = LevelConfig
 
 defaultLevelConfig :: LevelConfig
 defaultLevelConfig = LevelConfig
-  { lcWidth          = 60
-  , lcHeight         = 20
-  , lcMaxRooms       = 14
+  { lcWidth          = 120
+  , lcHeight         = 40
+  , lcMaxRooms       = 28
   , lcRoomMin        = 4
   , lcRoomMax        = 9
   , lcDepth          = 1
