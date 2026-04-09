@@ -330,6 +330,7 @@ drawInventoryModal gs =
         [ "Equipped:"
         , "  Weapon: " ++ maybe "(none)" (itemName . IWeapon) (invWeapon inv)
         , "  Armor:  " ++ maybe "(none)" (itemName . IArmor)  (invArmor  inv)
+        , "  Arrows: " ++ show (invArrows inv)
         , ""
         , "Bag (" ++ show (Inv.inventoryCount inv) ++ "/" ++ show Inv.invCapacity ++ "):"
         ]
@@ -675,6 +676,9 @@ drawHelpModal wizardEnabled =
              [ "  g                    pick up item here"
              , "  >                    descend stairs"
              , "  <                    ascend stairs"
+             , "  f                    fire a bow (then pick a"
+             , "                       direction; needs bow equipped"
+             , "                       and at least one arrow)"
              ]
         ++ section "Modals"
              [ "  i                    inventory"

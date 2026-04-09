@@ -175,6 +175,7 @@ handleAwaitingDirectionKey mAudio dirAct key =
       modify $ \gs -> gs { gsAwaitingDirection = Nothing }
       let act = case dirAct of
             DirCloseDoor -> CloseDoor dir
+            DirFire      -> Fire dir
       modify (applyAction act)
       playEventsFor mAudio
     Nothing  ->

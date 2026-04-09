@@ -29,7 +29,12 @@ module Game.GameState
   , runRank
   , playerUseItem
   , playerAttack
+  , applyHitResult
+  , fireArrow
   , playerOpenChest
+  , chestAt
+  , monsterAt
+  , npcAt
   ) where
 
 import qualified Data.Map.Strict as Map
@@ -44,6 +49,7 @@ import Game.Save.Types (SaveMetadata)
 import Game.Types
 import qualified Game.Logic.Chest as Chest
 import Game.Logic.Chest (Chest(..), ChestState(..), chestRespawnTurns)
+import Game.Logic.Ranged (RayOutcome(..), arrowRange, walkRay)
 import qualified Game.Logic.Combat as C
 import Game.Logic.Combat (Damage(..))
 import Game.Logic.Command (Command(..), isCheatCommand)
@@ -301,6 +307,7 @@ data GameState = GameState
 --   (kick, aim, shoot) can slot in without another GameState field.
 data DirectionalAction
   = DirCloseDoor
+  | DirFire
   deriving (Eq, Show)
 
 -- | UI state for the save/load picker modal. Kept entirely in
@@ -892,6 +899,15 @@ applyAction act gs0 =
        GoUpStairs          -> processMonsters (playerAscend gs)
        CloseDoor dir       -> playerCloseDoor dir gs
        Dash dir            -> playerDash dir gs
+       Fire dir            ->
+         let gs' = fireArrow dir gs
+             -- Fire only costs a turn when an arrow actually
+             -- left the quiver. If the arrow count is unchanged,
+             -- the attempt failed (no bow / no arrows) and the
+             -- turn is a free no-op, matching dash-on-cooldown.
+             shot = invArrows (gsInventory gs')
+                  < invArrows (gsInventory gs)
+         in if shot then processMonsters gs' else gs'
        Move dir            ->
          let target = gsPlayerPos gs + dirToOffset dir
          in case monsterAt target (gsMonsters gs) of
@@ -1201,26 +1217,40 @@ playerOpenChest i c gs = case chestState c of
   ChestFull item ->
     let emptied = c { chestState = ChestEmpty chestRespawnTurns }
         chests' = replaceChestAt i emptied (gsChests gs)
-    in case Inv.addItem item (gsInventory gs) of
-         Right inv' ->
-           gs { gsInventory = inv'
-              , gsChests    = chests'
-              , gsMessages  =
-                  ("You open the chest and find a "
-                   ++ itemName item ++ ".")
-                  : gsMessages gs
-              }
-         Left InventoryFull ->
-           -- Bag is full: drop the item on the chest's tile so
-           -- the player can pick it up after freeing a slot.
-           -- Mirrors the "full bag" fallback the plan calls for.
-           gs { gsChests       = chests'
-              , gsItemsOnFloor = (chestPos c, item) : gsItemsOnFloor gs
-              , gsMessages     =
-                  ("The chest holds a " ++ itemName item
-                   ++ ", but your pack is full — it spills onto the floor.")
-                  : gsMessages gs
-              }
+    in case item of
+         -- Arrow bundles stack into 'invArrows' instead of
+         -- taking an inventory slot, so they can't fail on a
+         -- full bag and never land on the floor from a chest.
+         IArrows n ->
+           let inv  = gsInventory gs
+               inv' = inv { invArrows = invArrows inv + n }
+           in gs { gsInventory = inv'
+                 , gsChests    = chests'
+                 , gsMessages  =
+                     ("You open the chest and find a "
+                      ++ itemName item ++ ".")
+                     : gsMessages gs
+                 }
+         _ -> case Inv.addItem item (gsInventory gs) of
+           Right inv' ->
+             gs { gsInventory = inv'
+                , gsChests    = chests'
+                , gsMessages  =
+                    ("You open the chest and find a "
+                     ++ itemName item ++ ".")
+                    : gsMessages gs
+                }
+           Left InventoryFull ->
+             -- Bag is full: drop the item on the chest's tile so
+             -- the player can pick it up after freeing a slot.
+             -- Mirrors the "full bag" fallback the plan calls for.
+             gs { gsChests       = chests'
+                , gsItemsOnFloor = (chestPos c, item) : gsItemsOnFloor gs
+                , gsMessages     =
+                    ("The chest holds a " ++ itemName item
+                     ++ ", but your pack is full — it spills onto the floor.")
+                    : gsMessages gs
+                }
 
 ------------------------------------------------------------
 -- NPC dialogue
@@ -1329,8 +1359,121 @@ playerAttack :: GameState -> Int -> Monster -> GameState
 playerAttack gs i m =
   let playerCombat   = Inv.effectiveStats (gsPlayerStats gs) (gsInventory gs)
       (result, gen') = C.resolveAttack (gsRng gs) playerCombat (mStats m)
-      newMStats      = C.applyDamage (mStats m) (Damage (C.resultDamage result))
       msg            = C.describeAttack result (monsterName (mKind m))
+  in applyHitResult gs { gsRng = gen' } i m result [msg]
+
+-- | Ranged attack: fire one arrow in the given direction. The
+--   caller in 'applyAction' uses the arrow-count delta to decide
+--   whether the turn actually advanced — this function is pure
+--   and never decides whether monsters act next.
+--
+--   Refusal paths (no bow equipped, empty quiver) push a message
+--   and leave 'invArrows' untouched, so the caller's "did we
+--   shoot?" check reads cleanly. The successful path:
+--
+--     1. Decrements 'invArrows' by one.
+--     2. Walks the ray tile-by-tile via 'walkRay'. The ray
+--        starts one tile ahead of the player and is capped at
+--        'arrowRange'.
+--     3. On 'RayHitMonster', rolls a to-hit + crit via
+--        'C.resolveWith' using an "effective" stat block that
+--        layers 'Inv.bowRangedBonus' on top of the base attack,
+--        then hands the result to 'applyHitResult' — the same
+--        kill/loot/victory pipeline 'playerAttack' uses.
+--     4. On 'RayBlocked' / 'RayDropped', just logs a message.
+fireArrow :: Dir -> GameState -> GameState
+fireArrow dir gs
+  | invWeapon (gsInventory gs) /= Just Bow =
+      gs { gsMessages =
+             "You don't have a bow equipped." : gsMessages gs
+         }
+  | invArrows (gsInventory gs) <= 0 =
+      gs { gsMessages =
+             "You have no arrows." : gsMessages gs
+         }
+  | otherwise =
+      let start   = gsPlayerPos gs
+          step    = dirToOffset dir
+          path    = [ start + fmap (* k) step | k <- [1 .. arrowRange] ]
+          inv     = gsInventory gs
+          inv'    = inv { invArrows = invArrows inv - 1 }
+          gsArrow = gs { gsInventory = inv' }
+          npcHit p   = case npcAt   p (gsNPCs     gs) of
+                         Just _  -> True
+                         Nothing -> False
+          chestHit p = case chestAt p (gsChests   gs) of
+                         Just _  -> True
+                         Nothing -> False
+          monsterL p = monsterAt p (gsMonsters gs)
+          outcome    = walkRay (gsLevel gs) monsterL npcHit chestHit path
+      in case outcome of
+           RayHitMonster i m ->
+             let playerBase = gsPlayerStats gsArrow
+                 rangedAtk  = playerBase
+                   { sAttack = sAttack playerBase + Inv.bowRangedBonus }
+                 (roll,     gen1) = randomR (1 :: Int, 20)  (gsRng gsArrow)
+                 (critRoll, gen2) = randomR (1 :: Int, 100) gen1
+                 result = C.resolveWith roll critRoll rangedAtk (mStats m)
+                 verb   = case result of
+                   C.Miss          -> "glances off"
+                   C.Hit _         -> "strikes"
+                   C.CriticalHit _ -> "tears through"
+                   C.Kill _        -> "fells"
+                 msg    = "Your arrow " ++ verb ++ " the "
+                       ++ monsterName (mKind m) ++ "."
+                 gs1    = gsArrow { gsRng = gen2 }
+             in applyHitResult gs1 i m result [msg]
+           RayBlocked tail_ ->
+             gsArrow
+               { gsMessages =
+                   ("Your arrow " ++ tail_ ++ ".") : gsMessages gsArrow
+               }
+           RayDropped ->
+             gsArrow
+               { gsMessages =
+                   "Your arrow sails away and is lost."
+                   : gsMessages gsArrow
+               }
+
+-- | Shared post-resolution pipeline for any player-initiated hit
+--   on a monster, whether from melee ('playerAttack') or ranged
+--   ('Ranged.fireArrow'). Given:
+--
+--     * the game state with the /already-advanced/ RNG (the caller
+--       is responsible for threading 'gsRng' through its own dice
+--       rolls before handing us the state),
+--     * the monster's index in 'gsMonsters' at the moment of
+--       resolution,
+--     * the monster record itself (used for kind, position, name),
+--     * the 'C.CombatResult' from 'C.resolveAttack' / 'C.resolveWith',
+--     * zero or more caller-supplied message lines to prepend under
+--       the loot/level-up messages (the combat-line itself is
+--       typically the only entry),
+--
+--   this helper:
+--     * applies the damage to the monster,
+--     * removes or updates the monster entry,
+--     * rolls loot if the blow was fatal,
+--     * awards XP and synthesises level-up messages,
+--     * emits the right combat events ('EvAttackHit' / 'EvAttackCrit'
+--       / 'EvMonsterKilled' / 'EvBossKilled'),
+--     * freezes the run clock into 'gsFinalTurns' and flips
+--       'gsVictory' on a boss kill,
+--     * fires quest events ('EvKilledMonster' / 'EvKilledBoss')
+--       so quests progress from either code path.
+--
+--   Centralising this means ranged kills win the game the same way
+--   melee kills do, without the boss-victory snapshot being
+--   accidentally duplicated or forgotten.
+applyHitResult
+  :: GameState
+  -> Int
+  -> Monster
+  -> C.CombatResult
+  -> [String]
+  -> GameState
+applyHitResult gs i m result hitMsgs =
+  let newMStats      = C.applyDamage (mStats m) (Damage (C.resultDamage result))
       killed         = C.isDead newMStats
       wasBoss        = isBoss (mKind m)
       combatEv       = playerCombatEvent result
@@ -1341,7 +1484,6 @@ playerAttack gs i m =
                 (s', ups)  = P.gainXP (gsPlayerStats gs) reward
                 startLevel = sLevel (gsPlayerStats gs)
                 endLevel   = sLevel s'
-                -- Messages: newest first, so higher levels come first.
                 msgs = [ "You reach level " ++ show l ++ "!"
                        | l <- [endLevel, endLevel - 1 .. startLevel + 1]
                        ]
@@ -1355,30 +1497,20 @@ playerAttack gs i m =
       -- Roll loot drops at the monster's tile if the blow was fatal.
       (loot, gen'') =
         if killed
-          then Loot.rollLoot gen' (mKind m)
-          else ([], gen')
+          then Loot.rollLoot (gsRng gs) (mKind m)
+          else ([], gsRng gs)
       lootMsgs =
         [ "The " ++ monsterName (mKind m) ++ " drops a " ++ itemName it ++ "."
         | it <- loot
         ]
       itemsOnFloor' =
         gsItemsOnFloor gs ++ [ (mPos m, it) | it <- loot ]
-      -- When the killing blow lands on a boss, append EvBossKilled
-      -- and a dedicated victory line, and flip gsVictory so the
-      -- render / input layers can show the victory modal and freeze
-      -- further input the same way death does.
-      bossEvs      = [ EvBossKilled | killed && wasBoss ]
-      bossMsgs     = [ "With a final roar, the " ++ monsterName (mKind m) ++ " falls. You are victorious!"
-                     | killed && wasBoss ]
-      victory'     = gsVictory gs || (killed && wasBoss)
-      -- Freeze the run clock at the moment of the boss-killing
-      -- blow so the victory modal shows the turn-count at the
-      -- kill, not some slightly-later number bumped by stray
-      -- 'tickTurnCounter' calls. We only set 'gsFinalTurns' on
-      -- the /transition/ — if the player somehow enters this
-      -- branch after already winning, we keep the original
-      -- snapshot.
-      finalTurns'  = case gsFinalTurns gs of
+      bossEvs  = [ EvBossKilled | killed && wasBoss ]
+      bossMsgs = [ "With a final roar, the " ++ monsterName (mKind m)
+                   ++ " falls. You are victorious!"
+                 | killed && wasBoss ]
+      victory' = gsVictory gs || (killed && wasBoss)
+      finalTurns' = case gsFinalTurns gs of
         Just _  -> gsFinalTurns gs
         Nothing
           | victory' && not (gsVictory gs) -> Just (gsTurnsElapsed gs)
@@ -1388,18 +1520,16 @@ playerAttack gs i m =
           { gsMonsters     = monsters'
           , gsPlayerStats  = playerStats'
           , gsRng          = gen''
-          , gsMessages     = reverse lootMsgs ++ bossMsgs ++ levelMsgs ++ [msg] ++ gsMessages gs
+          , gsMessages     =
+              reverse lootMsgs ++ bossMsgs ++ levelMsgs
+                ++ reverse hitMsgs ++ gsMessages gs
           , gsItemsOnFloor = itemsOnFloor'
           , gsVictory      = victory'
           , gsFinalTurns   = finalTurns'
           }
         (combatEv : levelEvs ++ bossEvs)
-      -- Fire the generic kill event for every fatal blow, and
-      -- additionally fire the boss-specific event so a
-      -- 'GoalKillBoss' quest flips to ready. Non-boss kills don't
-      -- generate 'EvKilledBoss', so a boss-slaying quest only
-      -- advances on the right kill.
-      questEvs = if wasBoss then [EvKilledMonster, EvKilledBoss] else [EvKilledMonster]
+      questEvs = if wasBoss then [EvKilledMonster, EvKilledBoss]
+                            else [EvKilledMonster]
       fireAll gss = foldl (flip fireQuestEvent) gss questEvs
   in if killed then fireAll gs' else gs'
 
@@ -1415,6 +1545,18 @@ playerPickup gs =
   case takeFirstItemAt (gsPlayerPos gs) (gsItemsOnFloor gs) of
     Nothing ->
       gs { gsMessages = "Nothing to pick up." : gsMessages gs }
+    Just (IArrows n, rest) ->
+      -- Arrow bundles never occupy inventory slots; they stack
+      -- straight into 'invArrows'. Picking one up therefore
+      -- always succeeds, even on a full bag.
+      let inv  = gsInventory gs
+          inv' = inv { invArrows = invArrows inv + n }
+      in gs { gsInventory    = inv'
+            , gsItemsOnFloor = rest
+            , gsMessages     =
+                ("You pick up the " ++ itemName (IArrows n) ++ ".")
+                : gsMessages gs
+            }
     Just (item, rest) ->
       case Inv.addItem item (gsInventory gs) of
         Left InventoryFull ->
@@ -1478,6 +1620,16 @@ playerUseItem idx gs =
         let msg = "You fiddle with the " ++ itemName item
                ++ ". It probably fits a door somewhere."
         in gs { gsMessages = msg : gsMessages gs }
+      IArrows _ ->
+        -- Arrow bundles live on 'invArrows', not in the bag, so
+        -- this case is defensively unreachable — the pickup path
+        -- folds them into the counter. Leave a no-op with a
+        -- reassurance line in case a stray bundle ever does land
+        -- in 'invItems' (e.g. future wizard-spawn).
+        gs { gsMessages =
+               "You check your quiver and carry on."
+               : gsMessages gs
+           }
   where
     lookupBag i inv
       | i < 0 || i >= length (invItems inv) = Nothing

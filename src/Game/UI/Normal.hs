@@ -57,6 +57,15 @@ handleNormalKey _ _ _ (V.KChar 'c') _ =
     { gsAwaitingDirection = Just DirCloseDoor
     , gsMessages = "Close door in which direction?" : gsMessages gs
     }
+-- 'f' mirrors 'c': prompt for a direction key and dispatch 'Fire'
+-- on the next keystroke. Precondition errors (no bow / no arrows)
+-- are surfaced by 'fireArrow' itself, and the turn only advances
+-- on a successful shot.
+handleNormalKey _ _ _ (V.KChar 'f') _ =
+  modify $ \gs -> gs
+    { gsAwaitingDirection = Just DirFire
+    , gsMessages = "Fire in which direction?" : gsMessages gs
+    }
 handleNormalKey _ _ _ (V.KChar 'Q') _ =
   modify (\gs -> gs { gsQuestLogOpen = True, gsQuestLogCursor = Nothing })
 -- Quicksave (F5) and quickload (F9) are free actions: they do not

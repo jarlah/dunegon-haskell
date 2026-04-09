@@ -1026,6 +1026,155 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         Left  e   -> expectationFailure ("decode failed: " ++ show e)
 
   -- ----------------------------------------------------------------
+  -- Bows and arrows (Milestone 17, Step 3)
+  --
+  -- Pure ray walking lives in 'Game.Logic.RangedSpec'; here we cover
+  -- the integration points in 'GameState': preconditions that do
+  -- NOT advance a turn, the successful-fire flow that does, and the
+  -- shared 'applyHitResult' regression guard for ranged boss kills.
+  -- ----------------------------------------------------------------
+
+  describe "fireArrow (Game.GameState)" $ do
+
+    it "does nothing and leaves arrows untouched when no bow is equipped" $ do
+      let gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [ratAt (V2 2 1)])
+                  { gsInventory = emptyInventory { invArrows = 5 } }
+          gs1 = fireArrow N gs0
+      -- Arrow count is unchanged.
+      invArrows (gsInventory gs1) `shouldBe` 5
+      -- Rat is still alive and sitting where it was.
+      map mPos (gsMonsters gs1) `shouldBe` [V2 2 1]
+      -- A helpful message was pushed.
+      length (gsMessages gs1) > length (gsMessages gs0) `shouldBe` True
+
+    it "does nothing when a bow is equipped but the quiver is empty" $ do
+      let inv = emptyInventory { invWeapon = Just Bow, invArrows = 0 }
+          gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [ratAt (V2 2 1)])
+                  { gsInventory = inv }
+          gs1 = fireArrow N gs0
+      invArrows (gsInventory gs1) `shouldBe` 0
+      map mPos (gsMonsters gs1) `shouldBe` [V2 2 1]
+      length (gsMessages gs1) > length (gsMessages gs0) `shouldBe` True
+
+    it "kills the first monster along the firing direction" $ do
+      let inv = emptyInventory { invWeapon = Just Bow, invArrows = 3 }
+          gs0 = (mkFixture 3 (V2 2 3) overpoweredPlayer [ratAt (V2 2 1)])
+                  { gsInventory = inv }
+          gs1 = fireArrow N gs0
+      -- Overpowered stats (attack 9999) one-shot the rat.
+      gsMonsters gs1 `shouldBe` []
+      -- Exactly one arrow was consumed.
+      invArrows (gsInventory gs1) `shouldBe` 2
+
+    it "passes through empty tiles until it finds a monster" $ do
+      -- Player at (1,3), rat three tiles north at (1,1). The one
+      -- intermediate tile (1,2) is open floor, so the ray must keep
+      -- travelling.
+      let inv = emptyInventory { invWeapon = Just Bow, invArrows = 2 }
+          gs0 = (mkFixture 3 (V2 1 3) overpoweredPlayer [ratAt (V2 1 1)])
+                  { gsInventory = inv }
+          gs1 = fireArrow N gs0
+      gsMonsters gs1 `shouldBe` []
+      invArrows (gsInventory gs1) `shouldBe` 1
+
+    it "stops at a closed door" $ do
+      -- tinyRoom is 5x5; we stamp a closed door at (2,1). Firing
+      -- from (2,3) north, the arrow walks (2,2)->(2,1) and must be
+      -- blocked by the door. fireArrow still decrements 'invArrows'
+      -- on any precondition-passing shot, and it must NOT mutate
+      -- the door tile (no auto-open).
+      let doorIdx  = 1 * 5 + 2
+          withDoor = tinyRoom
+            { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door Closed)] }
+          inv      = emptyInventory { invWeapon = Just Bow, invArrows = 1 }
+          gs0      = (mkFixture 1 (V2 2 3) overpoweredPlayer [])
+                       { gsLevel = withDoor, gsInventory = inv }
+          gs1      = fireArrow N gs0
+      invArrows (gsInventory gs1) `shouldBe` 0
+      tileAt (gsLevel gs1) (V2 2 1) `shouldBe` Just (Door Closed)
+
+    it "stops at a locked door" $ do
+      let kid      = KeyId 7
+          doorIdx  = 1 * 5 + 2
+          withDoor = tinyRoom
+            { dlTiles = dlTiles tinyRoom V.// [(doorIdx, Door (Locked kid))] }
+          inv      = emptyInventory { invWeapon = Just Bow, invArrows = 1 }
+          gs0      = (mkFixture 1 (V2 2 3) overpoweredPlayer [])
+                       { gsLevel = withDoor, gsInventory = inv }
+          gs1      = fireArrow N gs0
+      -- Arrow was spent, door is still locked.
+      invArrows (gsInventory gs1) `shouldBe` 0
+      tileAt (gsLevel gs1) (V2 2 1) `shouldBe` Just (Door (Locked kid))
+
+    it "stops at an NPC without harming them" $ do
+      let npc = NPC
+            { npcName     = "Bystander"
+            , npcPos      = V2 2 1
+            , npcGreeting = "Hi."
+            , npcAIGreet  = Nothing
+            , npcOffers   = []
+            }
+          inv = emptyInventory { invWeapon = Just Bow, invArrows = 1 }
+          gs0 = (mkFixture 1 (V2 2 3) overpoweredPlayer [])
+                  { gsInventory = inv, gsNPCs = [npc] }
+          gs1 = fireArrow N gs0
+      -- Arrow was spent, NPC list is unchanged.
+      invArrows (gsInventory gs1) `shouldBe` 0
+      length (gsNPCs gs1) `shouldBe` 1
+
+    it "killing the dragon with an arrow sets gsVictory and freezes gsFinalTurns" $ do
+      -- Regression guard: the boss-victory pipeline must come from
+      -- the shared 'applyHitResult' helper, not a duplicated path
+      -- in 'fireArrow'.
+      let dragon = mkMonster Dragon (V2 1 1)
+          inv    = emptyInventory { invWeapon = Just Bow, invArrows = 1 }
+          gs0    = (mkFixture 3 (V2 3 1) overpoweredPlayer [dragon])
+                     { gsInventory    = inv
+                     , gsTurnsElapsed = 42
+                     }
+          gs1    = fireArrow W gs0
+      gsMonsters gs1 `shouldBe` []
+      gsVictory gs1 `shouldBe` True
+      gsFinalTurns gs1 `shouldBe` Just 42
+      EvBossKilled `elem` gsEvents gs1 `shouldBe` True
+
+    it "applyAction Fire advances the monster phase on a successful shot" $ do
+      -- The turn is only consumed when an arrow actually flies.
+      -- A shot with a bow + arrow should run 'processMonsters',
+      -- while the no-bow branch above does not.
+      let inv = emptyInventory { invWeapon = Just Bow, invArrows = 1 }
+          rat = ratAt (V2 3 3)
+          gs0 = (mkFixture 1 (V2 1 1) overpoweredPlayer [rat])
+                  { gsInventory = inv }
+          gs1 = applyAction (Fire E) gs0
+      -- Arrow spent and processMonsters ran (turn counter ticks).
+      invArrows (gsInventory gs1) `shouldBe` 0
+      gsTurnsElapsed gs1 `shouldBe` 1
+
+    it "applyAction Fire without a bow does not advance the turn" $ do
+      let gs0 = (mkFixture 1 (V2 1 1) overpoweredPlayer [ratAt (V2 3 3)])
+                  { gsInventory = emptyInventory { invArrows = 5 } }
+          gs1 = applyAction (Fire E) gs0
+      invArrows (gsInventory gs1) `shouldBe` 5
+      gsTurnsElapsed gs1 `shouldBe` 0
+
+  describe "bow / arrow save roundtrip" $
+    it "encodeSave / decodeSave preserves Bow weapon and invArrows" $ do
+      let inv = emptyInventory
+            { invWeapon = Just Bow
+            , invArrows = 7
+            , invItems  = [IWeapon Bow, IArrows 3]
+            }
+          gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [])
+                  { gsInventory = inv }
+      case decodeSave (encodeSave gs0) of
+        Right gs' -> do
+          invWeapon (gsInventory gs') `shouldBe` Just Bow
+          invArrows (gsInventory gs') `shouldBe` 7
+          invItems  (gsInventory gs') `shouldBe` [IWeapon Bow, IArrows 3]
+        Left e -> expectationFailure ("decode failed: " ++ show e)
+
+  -- ----------------------------------------------------------------
   -- Softlock safety: when 'newGame' mints a locked door on depth 1,
   -- the matching key must be placed on the spawn-side of that door.
   -- We scan many seeds rather than asserting against a single known

@@ -81,6 +81,8 @@ chestLootTable =
   , (2, IPotion HealingMajor)
   , (1, IWeapon ShortSword)
   , (1, IArmor  LeatherArmor)
+  , (1, IWeapon Bow)
+  , (2, IArrows 6)
   ]
 
 -- | Roll a single loot item out of the chest table. Deterministic

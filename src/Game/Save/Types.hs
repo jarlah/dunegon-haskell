@@ -125,5 +125,11 @@ instance Binary SaveMetadata
 --     from "Game.Logic.Chest". Both ride on the derived 'Binary'
 --     instance once the orphan 'Generic' / 'Binary' instances are
 --     added in "Game.Save".
+--   * @DHSAVE11@ — Bows and arrows (Milestone 17, Step 3).
+--     'Weapon' gained the 'Bow' constructor, 'Item' gained
+--     'IArrows', 'Inventory' gained the 'invArrows' counter, and
+--     'GameAction' gained 'Fire'. All of these are new
+--     constructors / fields under the existing derived 'Binary'
+--     instances, so older DHSAVE10 blobs can't round-trip.
 saveMagic :: BL.ByteString
-saveMagic = BL8.pack "DHSAVE10"
+saveMagic = BL8.pack "DHSAVE11"

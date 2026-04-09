@@ -178,6 +178,13 @@ data GameAction
     --   obstacle (wall, closed/locked door, monster, NPC, item,
     --   stairs). Consumes the dash cooldown; can only be used when
     --   'gsDashCooldown' is zero.
+  | Fire !Dir
+    -- ^ ranged attack: fire one arrow in the given direction.
+    --   Walks up to 'arrowRange' tiles, stopping on the first
+    --   blocker (wall / closed or locked door / NPC) or monster.
+    --   Requires an equipped 'Bow' and @invArrows > 0@. Failures
+    --   are free no-ops — they push a message and do NOT advance
+    --   the turn, matching the dash-on-cooldown pattern.
   | Quit
   deriving (Eq, Show)
 
@@ -317,10 +324,13 @@ data Potion
   | HealingMajor
   deriving (Eq, Show, Enum, Bounded)
 
--- | Equippable melee weapons.
+-- | Equippable weapons. 'ShortSword' and 'LongSword' are the melee
+--   options; 'Bow' is a ranged weapon whose bonus only applies to
+--   the 'Fire' action — its melee bonus is zero.
 data Weapon
   = ShortSword
   | LongSword
+  | Bow
   deriving (Eq, Show, Enum, Bounded)
 
 -- | Equippable body armor.
@@ -330,11 +340,15 @@ data Armor
   deriving (Eq, Show, Enum, Bounded)
 
 -- | An item that can appear on the floor or in a player's inventory.
+--   'IArrows' is a bundle drop — picking one up bumps 'invArrows'
+--   by its count rather than adding an entry to the bag, so arrows
+--   don't occupy inventory slots.
 data Item
   = IPotion !Potion
   | IWeapon !Weapon
   | IArmor  !Armor
   | IKey    !KeyId
+  | IArrows !Int
   deriving (Eq, Show)
 
 -- | ASCII glyph used to render an item on the dungeon floor or in
@@ -345,6 +359,7 @@ itemGlyph (IPotion _) = '!'
 itemGlyph (IWeapon _) = ')'
 itemGlyph (IArmor  _) = '['
 itemGlyph (IKey    _) = '('
+itemGlyph (IArrows _) = '/'
 
 -- | Human-readable name for message log / inventory listing.
 itemName :: Item -> String
@@ -352,19 +367,27 @@ itemName (IPotion HealingMinor) = "minor healing potion"
 itemName (IPotion HealingMajor) = "major healing potion"
 itemName (IWeapon ShortSword)   = "short sword"
 itemName (IWeapon LongSword)    = "long sword"
+itemName (IWeapon Bow)          = "bow"
 itemName (IArmor  LeatherArmor) = "leather armor"
 itemName (IArmor  ChainMail)    = "chain mail"
 itemName (IKey    k)            = keyName k
+itemName (IArrows 1)            = "arrow"
+itemName (IArrows n)            = "bundle of " ++ show n ++ " arrows"
 
 -- | What the player is carrying. 'invItems' holds unequipped items
 --   in pickup order; 'invWeapon' / 'invArmor' are the currently
 --   equipped slots. Equipping swaps the held piece for whatever is
 --   currently equipped (the previous piece goes back into
 --   'invItems'), so equip is never destructive.
+--
+--   'invArrows' is a plain counter rather than a stack of item
+--   entries — cleaner than letting arrows occupy inventory slots
+--   and lets the 'Fire' action decrement a single integer.
 data Inventory = Inventory
   { invItems  :: ![Item]
   , invWeapon :: !(Maybe Weapon)
   , invArmor  :: !(Maybe Armor)
+  , invArrows :: !Int
   } deriving (Eq, Show)
 
 -- | An empty inventory with nothing equipped.
@@ -373,6 +396,7 @@ emptyInventory = Inventory
   { invItems  = []
   , invWeapon = Nothing
   , invArmor  = Nothing
+  , invArrows = 0
   }
 
 -- | Errors that can arise from inventory operations.

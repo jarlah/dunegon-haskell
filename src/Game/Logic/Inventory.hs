@@ -17,6 +17,7 @@ module Game.Logic.Inventory
   , quaffPotion
     -- * Combat stat helpers
   , weaponBonus
+  , bowRangedBonus
   , armorBonus
   , effectiveStats
     -- * Potion effects
@@ -95,6 +96,11 @@ equip i inv = case removeItem i inv of
       -- Keys aren't equipped; they're consumed by bumping the
       -- matching locked door. Leave the bag untouched.
       inv
+    IArrows _ ->
+      -- Arrow bundles don't live in the bag at all; they stack
+      -- into 'invArrows' on pickup. This branch is defensively
+      -- unreachable — leave the inventory untouched.
+      inv
 
 -- | Quaff a potion: consume it (caller removes from bag) and apply
 --   its effect to the supplied stats. The returned stats never
@@ -109,10 +115,20 @@ potionHealAmount :: Potion -> Int
 potionHealAmount HealingMinor = 5
 potionHealAmount HealingMajor = 15
 
--- | Attack bonus granted by an equipped weapon.
+-- | Attack bonus granted by an equipped weapon in *melee*. The
+--   'Bow' contributes zero in melee — its damage comes from the
+--   'Fire' action instead, which applies 'bowRangedBonus' on top
+--   of the base attack stat.
 weaponBonus :: Weapon -> Int
 weaponBonus ShortSword = 2
 weaponBonus LongSword  = 4
+weaponBonus Bow        = 0
+
+-- | Attack bonus added to the base attack stat when firing an
+--   arrow from an equipped 'Bow'. Placed here next to the melee
+--   table so a future "longbow" slot has one obvious home.
+bowRangedBonus :: Int
+bowRangedBonus = 5
 
 -- | Defense bonus granted by equipped armor.
 armorBonus :: Armor -> Int

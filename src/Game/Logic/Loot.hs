@@ -41,6 +41,7 @@ lootTable Goblin =
   , (1, IPotion HealingMajor)
   , (2, IWeapon ShortSword)
   , (1, IArmor  LeatherArmor)
+  , (2, IArrows 3)
   ]
 lootTable Orc =
   [ (3, IPotion HealingMinor)
@@ -49,6 +50,8 @@ lootTable Orc =
   , (2, IWeapon LongSword)
   , (2, IArmor  LeatherArmor)
   , (1, IArmor  ChainMail)
+  , (2, IArrows 5)
+  , (1, IWeapon Bow)
   ]
 -- | Dragon hoard. A single major potion for now; the boss's real
 --   "reward" is the XP bounty from the Slay-the-Dragon quest.
