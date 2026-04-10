@@ -13,6 +13,7 @@ module Game.Save.Types
   ( SaveSlot(..)
   , SaveError(..)
   , SaveMetadata(..)
+  , SaveHeader(..)
   , saveMagic
   ) where
 
@@ -54,10 +55,7 @@ data SaveError
 instance Binary SaveError
 
 -- | Small-footprint metadata shown in the save/load menu so the
---   player can tell slots apart without loading them. Extracted by
---   fully decoding the save and reading a handful of fields — it is
---   cheap enough at our save sizes that a dedicated header would be
---   premature optimization.
+--   player can tell slots apart without loading them.
 --
 --   The file's modification time is used only internally by
 --   'Game.Save.listSaves' to sort most-recent-first; it is
@@ -78,6 +76,18 @@ data SaveMetadata = SaveMetadata
   } deriving (Eq, Show, Generic)
 
 instance Binary SaveMetadata
+
+-- | Fixed-size header written between the magic prefix and the full
+--   'GameState' payload. Contains just enough data for 'listSaves' to
+--   populate the save menu without decoding the full game state.
+data SaveHeader = SaveHeader
+  { shDepth      :: !Int
+  , shPlayerLvl  :: !Int
+  , shPlayerHP   :: !Int
+  , shCheatsUsed :: !Bool
+  } deriving (Eq, Show, Generic)
+
+instance Binary SaveHeader
 
 -- | Fixed 8-byte prefix that every save file must begin with. The
 --   first six bytes are the format tag, the last two are an ASCII
@@ -131,5 +141,9 @@ instance Binary SaveMetadata
 --     'GameAction' gained 'Fire'. All of these are new
 --     constructors / fields under the existing derived 'Binary'
 --     instances, so older DHSAVE10 blobs can't round-trip.
+--   * @DHSAVE12@ — Save header. A fixed 'SaveHeader' is now
+--     written between the magic and the 'GameState' payload so
+--     'listSaves' can read metadata without decoding the full
+--     game state.
 saveMagic :: BL.ByteString
-saveMagic = BL8.pack "DHSAVE11"
+saveMagic = BL8.pack "DHSAVE12"

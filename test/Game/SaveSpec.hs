@@ -22,6 +22,8 @@ import           Test.Hspec
 
 import           Game.Core          (GameState(..), hardcodedInitialState)
 import           Game.Save
+import           Game.Save.Types    (SaveHeader(..))
+import           Game.Types         (DungeonLevel(..), Stats(..))
 
 spec :: Spec
 spec = do
@@ -70,8 +72,27 @@ spec = do
           expectationFailure
             ("expected SaveCorrupt, got: " ++ show other)
 
-    it "saveMagic is exactly DHSAVE11" $
-      saveMagic `shouldBe` BL8.pack "DHSAVE11"
+    it "saveMagic is exactly DHSAVE12" $
+      saveMagic `shouldBe` BL8.pack "DHSAVE12"
+
+  describe "Game.Save.decodeHeader" $ do
+
+    it "extracts header fields matching the original GameState" $ do
+      let gs  = hardcodedInitialState
+          hdr = decodeHeader (encodeSave gs)
+      case hdr of
+        Right h -> do
+          shDepth h      `shouldBe` dlDepth (gsLevel gs)
+          shPlayerLvl h  `shouldBe` sLevel (gsPlayerStats gs)
+          shPlayerHP h   `shouldBe` sHP (gsPlayerStats gs)
+          shCheatsUsed h `shouldBe` gsCheatsUsed gs
+        Left e -> expectationFailure ("decodeHeader failed: " ++ show e)
+
+    it "rejects wrong magic" $
+      expectLeft SaveWrongMagic (decodeHeader (BL8.pack "GARBAGE!"))
+
+    it "rejects wrong version" $
+      expectLeft SaveWrongVersion (decodeHeader (BL8.pack "DHSAVE99stuff"))
 
   describe "slotFileName / slotFromFileName" $ do
 

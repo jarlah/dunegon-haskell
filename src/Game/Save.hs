@@ -60,6 +60,7 @@ module Game.Save
     -- * Pure encode / decode
   , encodeSave
   , decodeSave
+  , decodeHeader
     -- * Filesystem IO
   , saveDir
   , slotPath
@@ -217,38 +218,52 @@ instance Binary GameState
 -- Pure encode / decode
 --------------------------------------------------------------------
 
--- | Serialize a 'GameState' to a lazy bytestring, prefixed with the
---   magic header. Pure — IO happens in 'writeSave'.
-encodeSave :: GameState -> BL.ByteString
-encodeSave gs = saveMagic <> encode gs
+-- | Build a 'SaveHeader' from the current 'GameState'.
+mkHeader :: GameState -> SaveHeader
+mkHeader gs = SaveHeader
+  { shDepth      = dlDepth (gsLevel gs)
+  , shPlayerLvl  = sLevel (gsPlayerStats gs)
+  , shPlayerHP   = sHP (gsPlayerStats gs)
+  , shCheatsUsed = gsCheatsUsed gs
+  }
 
--- | Strict inverse of 'encodeSave'. Verifies the magic header, then
---   runs the binary decoder on the payload. Any decoder failure —
---   short input, trailing garbage, wrong constructor tag — becomes
---   'SaveCorrupt'.
+-- | Serialize a 'GameState' to a lazy bytestring, prefixed with the
+--   magic header and a 'SaveHeader'. Pure — IO happens in 'writeSave'.
+encodeSave :: GameState -> BL.ByteString
+encodeSave gs = saveMagic <> encode (mkHeader gs) <> encode gs
+
+-- | Validate the magic prefix common to both decode paths.
+checkMagic :: BL.ByteString -> Either SaveError BL.ByteString
+checkMagic bs
+  | saveMagic `BL.isPrefixOf` bs = Right (BL.drop (BL.length saveMagic) bs)
+  | BL.length bs < BL.length saveMagic = Left SaveWrongMagic
+  | BL8.pack "DHSAVE" `BL.isPrefixOf` bs = Left SaveWrongVersion
+  | otherwise = Left SaveWrongMagic
+
+-- | Decode only the 'SaveHeader' from a save file, ignoring the
+--   'GameState' payload entirely. Used by 'listSaves' to populate
+--   the save menu cheaply.
+decodeHeader :: BL.ByteString -> Either SaveError SaveHeader
+decodeHeader bs = do
+  afterMagic <- checkMagic bs
+  case decodeOrFail afterMagic of
+    Left  (_, _, err) -> Left (SaveCorrupt err)
+    Right (_, _, hdr) -> Right hdr
+
+-- | Strict inverse of 'encodeSave'. Verifies the magic prefix,
+--   skips the 'SaveHeader', then decodes the 'GameState' payload.
 decodeSave :: BL.ByteString -> Either SaveError GameState
-decodeSave bs
-  | not (saveMagic `BL.isPrefixOf` bs) =
-      if BL.length bs < BL.length saveMagic
-        -- Very short files can't even fit the header: same user-facing
-        -- meaning as "wrong magic" — this isn't one of our files.
-        then Left SaveWrongMagic
-        else
-          -- First six bytes ("DHSAVE") must match; only the version
-          -- suffix is allowed to differ on future format bumps.
-          let (prefix, _) = BL.splitAt 6 bs
-              tag         = BL8.pack "DHSAVE"
-          in if prefix == tag
-               then Left SaveWrongVersion
-               else Left SaveWrongMagic
-  | otherwise =
-      let payload = BL.drop (BL.length saveMagic) bs
-      in case decodeOrFail payload of
-           Left (_, _, err)      -> Left (SaveCorrupt err)
-           Right (remaining, _, gs)
-             | BL.null remaining -> Right gs
-             | otherwise         ->
-                 Left (SaveCorrupt "trailing bytes after GameState")
+decodeSave bs = do
+  afterMagic <- checkMagic bs
+  case decodeOrFail afterMagic of
+    Left  (_, _, err)          -> Left (SaveCorrupt err)
+    Right (afterHeader, _, (_h :: SaveHeader)) ->
+      case decodeOrFail afterHeader of
+        Left  (_, _, err)      -> Left (SaveCorrupt err)
+        Right (remaining, _, gs)
+          | BL.null remaining  -> Right gs
+          | otherwise          ->
+              Left (SaveCorrupt "trailing bytes after GameState")
 
 --------------------------------------------------------------------
 -- Filesystem IO
@@ -321,9 +336,8 @@ readSave slot = runSaveIO $ do
 -- | List every known save slot in the save directory, newest first.
 --   Unknown or malformed filenames are silently skipped (so the
 --   player can drop a @README.txt@ in there without breaking the
---   menu). Each returned metadata is built by fully decoding the
---   save — fine at our sizes, and lets us surface depth/level info
---   in the menu without a separate header file.
+--   menu). Metadata is read from the fixed 'SaveHeader' without
+--   decoding the full 'GameState'.
 listSaves :: IO (Either SaveError [SaveMetadata])
 listSaves = runSaveIO $ do
   dir    <- saveIO saveDir
@@ -341,7 +355,7 @@ listSaves = runSaveIO $ do
       let sorted = sortOn (Down . snd) [p | Just p <- pairs]
       pure (map fst sorted)
   where
-    -- Pair each decoded save with its file mtime for sorting.
+    -- Pair each save's header with its file mtime for sorting.
     -- Saves that fail to decode or stat are silently dropped so a
     -- stray or corrupt file doesn't break the menu.
     readMetaWithMTime
@@ -350,14 +364,14 @@ listSaves = runSaveIO $ do
     readMetaWithMTime (slot, path) = do
       r <- runSaveIO $ do
         bs <- tryIO (BL.readFile path)
-        gs <- liftEither (decodeSave bs)
-        t  <- tryIO (getModificationTime path)
+        hdr <- liftEither (decodeHeader bs)
+        t   <- tryIO (getModificationTime path)
         pure ( SaveMetadata
                  { smSlot       = slot
-                 , smDepth      = dlDepth (gsLevel gs)
-                 , smPlayerLvl  = sLevel (gsPlayerStats gs)
-                 , smPlayerHP   = sHP (gsPlayerStats gs)
-                 , smCheatsUsed = gsCheatsUsed gs
+                 , smDepth      = shDepth hdr
+                 , smPlayerLvl  = shPlayerLvl hdr
+                 , smPlayerHP   = shPlayerHP hdr
+                 , smCheatsUsed = shCheatsUsed hdr
                  }
              , t
              )
