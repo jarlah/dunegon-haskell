@@ -9,7 +9,7 @@ module Game.UI.Normal
   ( handleNormalKey
   ) where
 
-import Brick (EventM, get, modify)
+import Brick (EventM, modify)
 import qualified Graphics.Vty as V
 
 import Game.AI.Runtime (AIRuntime)
@@ -32,16 +32,8 @@ handleNormalKey
   -> V.Key
   -> [V.Modifier]
   -> EventM Name GameState ()
--- Esc at the top priority: if the AI room-description panel is
--- currently drawn, dismiss it without confirming quit. This keeps
--- Esc's usual modal-dismiss semantics working for the flavor
--- panel. Only if the panel is not visible does Esc fall through
--- to the generic 'Quit' mapping in 'handleKey' below.
-handleNormalKey _ _ _ V.KEsc _ = do
-  gs <- get
-  if gsRoomDescVisible gs
-    then modify (\s -> s { gsRoomDescVisible = False })
-    else modify (\s -> s { gsConfirmQuit = True })
+handleNormalKey _ _ _ V.KEsc _ =
+  modify (\s -> s { gsConfirmQuit = True })
 handleNormalKey _ _ _ (V.KChar '/') _ =
   modify (\gs -> gs { gsPrompt = Just "" })
 handleNormalKey _ _ _ (V.KChar '?') _ =

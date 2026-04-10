@@ -130,8 +130,8 @@ launchTitleAttr = attrName "launchTitle"
 --   runtime flag: it's forwarded into the help modal so the wizard
 --   command section is hidden when cheats are disabled, and never
 --   advertised to a clean-run player.
-drawGame :: Bool -> GameState -> [Widget Name]
-drawGame wizardEnabled gs =
+drawGame :: Bool -> Bool -> GameState -> [Widget Name]
+drawGame wizardEnabled aiOn gs =
   let baseLayer = vBox
         [ drawGrid gs
         , drawPromptLine gs
@@ -140,15 +140,8 @@ drawGame wizardEnabled gs =
         , drawMessages gs
         , str "? for help    q/Esc to quit"
         ]
-      -- The room description panel sits above the base layer but
-      -- below any real modal (inventory, quest log, dialogue, ...),
-      -- so opening a modal temporarily hides it without having to
-      -- drop the cached text. When no modal is on screen and the
-      -- panel is visible *and* has content, render it — otherwise
-      -- the gameplay view is untouched.
-      withRoomPanel layers = case (gsRoomDescVisible gs, gsRoomDesc gs) of
-        (True, Just d) -> drawRoomDescPanel d : layers
-        _              -> layers
+      -- Room descriptions are now pushed into gsMessages instead of
+      -- rendered as a floating panel (see applyAIResponse).
   in case gsLaunchMenu gs of
        -- Launch / title screen swallows the whole viewport so no
        -- gameplay artifacts leak through before the player picks
@@ -156,7 +149,7 @@ drawGame wizardEnabled gs =
        Just lm -> [drawLaunchMenu gs lm]
        Nothing -> case gsDialogue gs of
          Just i | Just npc <- safeIndex i (gsNPCs gs) ->
-           [drawDialogueModal (gsQuests gs) i npc, baseLayer]
+           [drawDialogueModal aiOn (gsQuests gs) i npc, baseLayer]
          _
            | gsVictory      gs  -> [drawVictoryModal gs, baseLayer]
            | gsConfirmQuit  gs  -> [drawQuitConfirmModal, baseLayer]
@@ -166,7 +159,7 @@ drawGame wizardEnabled gs =
            | gsInventoryOpen gs -> [drawInventoryModal gs, baseLayer]
            | Just keyNm <- gsLockedDoorPrompt gs ->
                [drawLockedDoorModal keyNm, baseLayer]
-           | otherwise          -> withRoomPanel [baseLayer]
+           | otherwise          -> [baseLayer]
 
 -- | The line between the map and the status bar. When the
 --   slash-command prompt is closed it's a blank spacer that holds
@@ -360,16 +353,17 @@ drawInventoryModal gs =
 --     pay the full bounty; no @*@ means they'll pay half.
 --   * Lowercase letters @a@..@z@ accept a new offer.
 --   * @Esc@ closes without any choice, leaving both lists intact.
-drawDialogueModal :: [Quest] -> Int -> NPC -> Widget Name
-drawDialogueModal quests npcIdx npc =
+drawDialogueModal :: Bool -> [Quest] -> Int -> NPC -> Widget Name
+drawDialogueModal aiEnabled quests npcIdx npc =
   let ready = [ q | q <- quests, qStatus q == QuestReadyToTurnIn ]
       -- Prefer the AI-generated greeting when we have one cached;
-      -- fall back to the hardcoded line otherwise. This is the only
-      -- place the two fields are disambiguated — everyone else just
-      -- sees "the greeting for this NPC".
+      -- fall back to the hardcoded line otherwise. When AI is enabled
+      -- but the greeting hasn't arrived yet, show a loading indicator
+      -- so the player knows something is coming.
       greetingLine = case npcAIGreet npc of
         Just g  -> g
-        Nothing -> npcGreeting npc
+        Nothing | aiEnabled -> "..."
+                | otherwise -> npcGreeting npc
       header =
         [ "\"" ++ greetingLine ++ "\""
         , ""
@@ -448,22 +442,6 @@ drawQuestLogModal gs =
 
       body = vBox (map str lines_)
   in modalFrame id "Quest Log" body
-
--- | Small floating panel for the AI-generated room description.
---   Positioned with 'centerLayer' like every other modal in the
---   game, but deliberately narrower and single-sentence so it
---   reads as flavor rather than a dialogue box. The player can
---   walk around while it's on screen — 'handleNormalKey' binds
---   Esc to dismiss it at the lowest priority so it doesn't
---   shadow any other modal's Esc handling.
-drawRoomDescPanel :: String -> Widget Name
-drawRoomDescPanel desc =
-  modalFrame (hLimit 60) "Room"
-    $ vBox
-        [ strWrap desc
-        , str ""
-        , str "Esc to dismiss"
-        ]
 
 -- | A tiny confirmation modal shown when the player presses @q@
 --   or @Esc@ in normal mode. Prevents fat-fingered quits given

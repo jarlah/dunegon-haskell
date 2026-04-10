@@ -265,10 +265,6 @@ maybeFireRoomDesc rt
               then (s, False)
               else (Set.insert slot s, True)
           when fire $ do
-            -- Hide any stale description from the previous room so
-            -- the old panel doesn't sit on top of the new room while
-            -- the new reply is in flight.
-            modify (\s -> s { gsRoomDescVisible = False })
             let room = rooms !! roomIdx
                 monsterNames =
                   [ T.pack (monsterName (mKind m))
@@ -322,9 +318,9 @@ applyAIResponse rt resp = case resp of
   RespGreeting tok (Left err) -> do
     liftIO $ logAI (aiLog rt) $ "greeting response failed: "
               ++ T.unpack (displayAIError err)
-    -- Failure: clear the bookkeeping so a retry is possible next
-    -- time the player re-enters the dialogue. The greeting field
-    -- stays 'Nothing', so the fallback line keeps showing.
+    -- Failure: clear the bookkeeping and stamp the hardcoded fallback
+    -- into npcAIGreet so the dialogue modal stops showing "..." and
+    -- displays the default greeting instead.
     mSlot <- liftIO $ atomicModifyIORef' (aiTokenMap rt) $ \m ->
       case lookup tok m of
         Just s  -> (filter ((/= tok) . fst) m, Just s)
@@ -333,6 +329,13 @@ applyAIResponse rt resp = case resp of
       case mSlot of
         Just s  -> (filter (/= s) ps, ())
         Nothing -> (ps, ())
+    case mSlot of
+      Nothing -> pure ()
+      Just (depth, npcIdx) -> do
+        gs <- get
+        when (dlDepth (gsLevel gs) == depth) $ do
+          let npc = gsNPCs gs !! npcIdx
+          modify (updateNPCGreet npcIdx (npcGreeting npc))
   RespQuest _ (Right body) ->
     -- Parse the LLM's JSON reply and, on success, append the quest
     -- to the Quest Master's offer list so the player finds it the
@@ -374,8 +377,7 @@ applyAIResponse rt resp = case resp of
         -- room. Drop silently.
         when (curDepth == depth && curRoom == Just roomIdx) $
           modify $ \s -> s
-            { gsRoomDesc        = Just (T.unpack descTxt)
-            , gsRoomDescVisible = True
+            { gsMessages = T.unpack descTxt : gsMessages s
             }
   RespRoomDesc tok (Left err) -> do
     liftIO $ logAI (aiLog rt) $ "room-desc response failed: "

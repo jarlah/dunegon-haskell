@@ -11,7 +11,7 @@ import System.IO (hPutStrLn, stderr)
 import System.Random (newStdGen)
 
 import Game.AI.Runtime
-  ( AIRuntime, AppEvent (..)
+  ( AIRuntime (..), AppEvent (..)
   , applyAIResponse, maybeFireGreeting, maybeFireQuest, maybeFireRoomDesc
   , startAIRuntime, stopAIRuntime
   )
@@ -47,7 +47,7 @@ mkApp
   -> RuntimeFlags
   -> App GameState AppEvent Name
 mkApp mAudio aiRt rFlags = App
-  { appDraw         = drawGame (rfWizardEnabled rFlags)
+  { appDraw         = drawGame (rfWizardEnabled rFlags) (Config.aiEnabled (aiCfg aiRt))
   , appChooseCursor = showFirstCursor
   , appHandleEvent  = handleEvent mAudio aiRt rFlags
   , appStartEvent   = pure ()
