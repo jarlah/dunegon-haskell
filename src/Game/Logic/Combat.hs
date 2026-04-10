@@ -94,8 +94,8 @@ data HitOutcome = HitOutcome
   { hoMonsters     :: ![Monster]
   , hoPlayerStats  :: !Stats
   , hoRng          :: !StdGen
-  , hoMessages     :: ![String]      -- ^ newest-first, to prepend
-  , hoItemsOnFloor :: ![(Pos, Item)]
+  , hoNewMessages  :: ![String]      -- ^ new messages only (newest-first)
+  , hoNewItems     :: ![(Pos, Item)] -- ^ new loot drops only
   , hoEvents       :: ![GameEvent]
   , hoVictory      :: !Bool
   , hoFinalTurns   :: !(Maybe Int)
@@ -109,19 +109,16 @@ applyHitResult
   :: Int            -- ^ monster index
   -> Monster        -- ^ the monster hit
   -> CombatResult
-  -> [String]       -- ^ caller-supplied messages (e.g. "You hit the rat for 3.")
   -> [Monster]      -- ^ current monster list
   -> Stats          -- ^ player stats
   -> StdGen         -- ^ RNG (already advanced past the attack roll)
-  -> [(Pos, Item)]  -- ^ items on floor
-  -> [String]       -- ^ current messages (newest-first)
   -> Bool           -- ^ current victory flag
   -> Maybe Int      -- ^ current final turns
   -> Int            -- ^ turns elapsed
   -> [Quest]        -- ^ current quests
   -> HitOutcome
-applyHitResult i m result hitMsgs monsters playerStats gen
-               itemsOnFloor msgs victory finalTurns turnsElapsed quests =
+applyHitResult i m result monsters playerStats gen
+               victory finalTurns turnsElapsed quests =
   let newMStats      = applyDamage (mStats m) (Damage (resultDamage result))
       killed         = isDead newMStats
       wasBoss        = isBoss (mKind m)
@@ -151,8 +148,7 @@ applyHitResult i m result hitMsgs monsters playerStats gen
         [ "The " ++ monsterName (mKind m) ++ " drops a " ++ itemName it ++ "."
         | it <- loot
         ]
-      itemsOnFloor' =
-        itemsOnFloor ++ [ (mPos m, it) | it <- loot ]
+      newItems = [ (mPos m, it) | it <- loot ]
       bossEvs  = [ EvBossKilled | killed && wasBoss ]
       bossMsgs = [ "With a final roar, the " ++ monsterName (mKind m)
                    ++ " falls. You are victorious!"
@@ -163,9 +159,8 @@ applyHitResult i m result hitMsgs monsters playerStats gen
         Nothing
           | victory' && not victory -> Just turnsElapsed
           | otherwise               -> Nothing
-      allMsgs =
+      newMsgs =
         reverse lootMsgs ++ bossMsgs ++ levelMsgs
-          ++ reverse hitMsgs ++ msgs
       allEvs = combatEv : levelEvs ++ bossEvs
       -- Fire quest events on kill
       questEvs = if wasBoss then [EvKilledMonster, EvKilledBoss]
@@ -180,8 +175,8 @@ applyHitResult i m result hitMsgs monsters playerStats gen
        { hoMonsters     = monsters'
        , hoPlayerStats  = playerStats'
        , hoRng          = gen''
-       , hoMessages     = reverse questMsgs ++ allMsgs
-       , hoItemsOnFloor = itemsOnFloor'
+       , hoNewMessages  = reverse questMsgs ++ newMsgs
+       , hoNewItems     = newItems
        , hoEvents       = allEvs
        , hoVictory      = victory'
        , hoFinalTurns   = finalTurns'
