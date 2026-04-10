@@ -6,9 +6,8 @@ import Linear (V2(..))
 
 import Game.Types
   ( Pos, Dir(..), DungeonLevel(..), Tile(..), DoorState(..), Item(..), Potion(..)
-  , Monster, MonsterKind(..), mkMonster, tileAt
+  , MonsterKind(..), mkMonster, tileAt
   )
-import Game.State.Types (NPC(..))
 import Game.Logic.Dungeon (Room(..))
 import Game.Logic.Door (openDoorAt, closeDoorAt)
 import Game.Logic.Movement (DashContext(..), dashSteps)

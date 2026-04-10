@@ -6,7 +6,7 @@ import qualified Data.Vector as V
 import Linear (V2(..))
 import System.Random (mkStdGen)
 
-import Game.Types (Pos, DungeonLevel(..), Tile(..), DoorState(..), KeyId(..), Item(..), tileAt)
+import Game.Types (DungeonLevel(..), Tile(..), DoorState(..), KeyId(..))
 import Game.Logic.Dungeon (Room(..))
 import Game.Logic.Placement
 

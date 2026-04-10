@@ -3,7 +3,7 @@ module Game.Logic.TickSpec (spec) where
 import Test.Hspec
 import qualified Data.Set as Set
 
-import Game.Types (Stats(..), Monster(..), MonsterKind(..), mkMonster)
+import Game.Types (Stats(..), MonsterKind(..), mkMonster)
 import Game.Logic.Tick (tickDash, tickRegen, RegenContext(..), tickTurnCounter)
 import Game.Logic.Constants (regenInterval)
 import Linear (V2(..))

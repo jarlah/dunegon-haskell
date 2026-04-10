@@ -4,7 +4,7 @@ import Test.Hspec
 import Linear (V2(..))
 
 import Game.Types
-  ( Pos, Monster(..), MonsterKind(..), Item(..), Potion(..)
+  ( MonsterKind(..), Item(..), Potion(..)
   , KeyId(..), Inventory(..), mkMonster, emptyInventory
   )
 import Game.State.Types (NPC(..))
@@ -59,8 +59,7 @@ spec = do
 
     it "replaces the chest at the given index" $ do
       let result = replaceChestAt 0 replacement [c1, c2]
-      head result `shouldBe` replacement
-      result !! 1 `shouldBe` c2
+      result `shouldBe` [replacement, c2]
 
     it "leaves list unchanged for out-of-range index" $ do
       let result = replaceChestAt 5 replacement [c1, c2]
