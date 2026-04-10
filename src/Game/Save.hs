@@ -73,6 +73,8 @@ module Game.Save
   ) where
 
 import           Control.Exception          (IOException, try)
+import           Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
+import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy       as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import           Data.Binary                (Binary (..), decodeOrFail, encode)
@@ -258,10 +260,10 @@ decodeSave bs
 --   @~/Library/Application Support/dungeon-haskell/saves@ on macOS,
 --   @%APPDATA%\\dungeon-haskell\\saves@ on Windows).
 saveDir :: IO (Either SaveError FilePath)
-saveDir = wrapIO $ do
-  base <- getXdgDirectory XdgData "dungeon-haskell"
+saveDir = runSaveIO $ do
+  base <- tryIO $ getXdgDirectory XdgData "dungeon-haskell"
   let dir = base </> "saves"
-  createDirectoryIfMissing True dir
+  tryIO $ createDirectoryIfMissing True dir
   pure dir
 
 -- | Filename (without directory) for a save slot. Kept as a pure
@@ -288,44 +290,33 @@ slotFromFileName fn
 -- | Absolute path for a save slot. Creates the save directory on
 --   demand — callers don't have to worry about it existing.
 slotPath :: SaveSlot -> IO (Either SaveError FilePath)
-slotPath slot = do
-  dirRes <- saveDir
-  case dirRes of
-    Left err  -> pure (Left err)
-    Right dir -> pure (Right (dir </> slotFileName slot))
+slotPath slot = runSaveIO $ do
+  dir <- saveIO saveDir
+  pure (dir </> slotFileName slot)
 
 -- | Write a 'GameState' atomically to the given slot. Encodes to a
 --   @<path>.tmp@ sibling, @fsync@-ish flushes via 'BL.writeFile',
 --   then 'renameFile's over the target. A crash mid-write can
 --   corrupt the tempfile but never an existing save.
 writeSave :: SaveSlot -> GameState -> IO (Either SaveError ())
-writeSave slot gs = do
-  pathRes <- slotPath slot
-  case pathRes of
-    Left err   -> pure (Left err)
-    Right path -> wrapIO $ do
-      let tmp = path ++ ".tmp"
-      BL.writeFile tmp (encodeSave gs)
-      renameFile tmp path
+writeSave slot gs = runSaveIO $ do
+  path <- saveIO (slotPath slot)
+  let tmp = path ++ ".tmp"
+  tryIO $ BL.writeFile tmp (encodeSave gs)
+  tryIO $ renameFile tmp path
 
 -- | Read the save at the given slot. Returns 'SaveMissing' if the
 --   file doesn't exist, and otherwise whatever 'decodeSave' returned
 --   — including 'SaveWrongMagic' / 'SaveWrongVersion' / 'SaveCorrupt'.
 readSave :: SaveSlot -> IO (Either SaveError GameState)
-readSave slot = do
-  pathRes <- slotPath slot
-  case pathRes of
-    Left err   -> pure (Left err)
-    Right path -> do
-      existsRes <- wrapIO (doesFileExist path)
-      case existsRes of
-        Left err    -> pure (Left err)
-        Right False -> pure (Left SaveMissing)
-        Right True  -> do
-          bsRes <- wrapIO (BL.readFile path)
-          case bsRes of
-            Left err -> pure (Left err)
-            Right bs -> pure (decodeSave bs)
+readSave slot = runSaveIO $ do
+  path   <- saveIO (slotPath slot)
+  exists <- tryIO (doesFileExist path)
+  if not exists
+    then throwE SaveMissing
+    else do
+      bs <- tryIO (BL.readFile path)
+      liftEither (decodeSave bs)
 
 -- | List every known save slot in the save directory, newest first.
 --   Unknown or malformed filenames are silently skipped (so the
@@ -334,31 +325,21 @@ readSave slot = do
 --   save — fine at our sizes, and lets us surface depth/level info
 --   in the menu without a separate header file.
 listSaves :: IO (Either SaveError [SaveMetadata])
-listSaves = do
-  dirRes <- saveDir
-  case dirRes of
-    Left err  -> pure (Left err)
-    Right dir -> do
-      existsRes <- wrapIO (doesDirectoryExist dir)
-      case existsRes of
-        Left err    -> pure (Left err)
-        Right False -> pure (Right [])
-        Right True  -> do
-          filesRes <- wrapIO (listDirectory dir)
-          case filesRes of
-            Left err    -> pure (Left err)
-            Right files -> do
-              let candidates =
-                    [ (s, dir </> f)
-                    | f <- files
-                    , Just s <- [slotFromFileName (takeFileName f)]
-                    ]
-              pairs <- mapM readMetaWithMTime candidates
-              -- Sort most-recent-first using the file mtime, then
-              -- drop the mtime so it doesn't leak into the returned
-              -- 'SaveMetadata' (which needs a Binary instance).
-              let sorted = sortOn (Down . snd) [p | Just p <- pairs]
-              pure (Right (map fst sorted))
+listSaves = runSaveIO $ do
+  dir    <- saveIO saveDir
+  exists <- tryIO (doesDirectoryExist dir)
+  if not exists
+    then pure []
+    else do
+      files <- tryIO (listDirectory dir)
+      let candidates =
+            [ (s, dir </> f)
+            | f <- files
+            , Just s <- [slotFromFileName (takeFileName f)]
+            ]
+      pairs <- liftIO $ mapM readMetaWithMTime candidates
+      let sorted = sortOn (Down . snd) [p | Just p <- pairs]
+      pure (map fst sorted)
   where
     -- Pair each decoded save with its file mtime for sorting.
     -- Saves that fail to decode or stat are silently dropped so a
@@ -367,53 +348,55 @@ listSaves = do
       :: (SaveSlot, FilePath)
       -> IO (Maybe (SaveMetadata, UTCTime))
     readMetaWithMTime (slot, path) = do
-      bsRes <- wrapIO (BL.readFile path)
-      case bsRes of
-        Left _   -> pure Nothing
-        Right bs -> case decodeSave bs of
-          Left _   -> pure Nothing
-          Right gs -> do
-            tRes <- wrapIO (getModificationTime path)
-            case tRes of
-              Left _  -> pure Nothing
-              Right t -> pure $ Just
-                ( SaveMetadata
-                    { smSlot       = slot
-                    , smDepth      = dlDepth (gsLevel gs)
-                    , smPlayerLvl  = sLevel (gsPlayerStats gs)
-                    , smPlayerHP   = sHP (gsPlayerStats gs)
-                    , smCheatsUsed = gsCheatsUsed gs
-                    }
-                , t
-                )
+      r <- runSaveIO $ do
+        bs <- tryIO (BL.readFile path)
+        gs <- liftEither (decodeSave bs)
+        t  <- tryIO (getModificationTime path)
+        pure ( SaveMetadata
+                 { smSlot       = slot
+                 , smDepth      = dlDepth (gsLevel gs)
+                 , smPlayerLvl  = sLevel (gsPlayerStats gs)
+                 , smPlayerHP   = sHP (gsPlayerStats gs)
+                 , smCheatsUsed = gsCheatsUsed gs
+                 }
+             , t
+             )
+      pure $ either (const Nothing) Just r
 
 -- | Delete the save at the given slot. Succeeds silently if the
 --   file was already absent — delete is idempotent.
 deleteSave :: SaveSlot -> IO (Either SaveError ())
-deleteSave slot = do
-  pathRes <- slotPath slot
-  case pathRes of
-    Left err   -> pure (Left err)
-    Right path -> do
-      existsRes <- wrapIO (doesFileExist path)
-      case existsRes of
-        Left err    -> pure (Left err)
-        Right False -> pure (Right ())
-        Right True  -> wrapIO (removeFile path)
+deleteSave slot = runSaveIO $ do
+  path   <- saveIO (slotPath slot)
+  exists <- tryIO (doesFileExist path)
+  if exists
+    then tryIO (removeFile path)
+    else pure ()
 
 --------------------------------------------------------------------
--- IO wrapping helper
+-- ExceptT helpers
 --------------------------------------------------------------------
 
--- | Run an IO action and convert any 'IOException' into a
---   'SaveError'. Used at every filesystem boundary so the caller
---   sees a uniform 'Either SaveError a' regardless of whether the
---   underlying failure was a missing directory, a permission error,
---   or a full disk.
-wrapIO :: forall a. IO a -> IO (Either SaveError a)
-wrapIO action = do
+type SaveIO = ExceptT SaveError IO
+
+-- | Run a 'SaveIO' computation, returning the result as
+--   @IO (Either SaveError a)@ — the public API boundary.
+runSaveIO :: SaveIO a -> IO (Either SaveError a)
+runSaveIO = runExceptT
+
+-- | Lift an existing @IO (Either SaveError a)@ into 'SaveIO'.
+saveIO :: IO (Either SaveError a) -> SaveIO a
+saveIO = ExceptT
+
+-- | Run a raw IO action, catching any 'IOException' as 'SaveIOError'.
+tryIO :: IO a -> SaveIO a
+tryIO action = ExceptT $ do
   (r :: Either IOException a) <- try action
   pure $ case r of
     Left e  -> Left (SaveIOError (show e))
     Right v -> Right v
+
+-- | Lift a pure 'Either SaveError a' into 'SaveIO'.
+liftEither :: Either SaveError a -> SaveIO a
+liftEither = ExceptT . pure
 

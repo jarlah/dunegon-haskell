@@ -101,6 +101,7 @@ library
     , http-tower-hs
     , async
     , stm
+    , transformers
 
 executable dungeon-haskell
   import:              shared
