@@ -1,13 +1,16 @@
 module Game.Logic.Movement
   ( tryMove
+  , BumpTarget(..)
+  , classifyBump
   , DashContext(..)
   , dashContext
   , dashSteps
   ) where
 
 import Game.Types
+import Game.Logic.Chest (Chest)
 import Game.State.Types (GameState(..), NPC(..))
-import Game.Logic.Lookup (monsterAt, npcAt)
+import Game.Logic.Lookup (monsterAt, npcAt, chestAt)
 
 -- | Attempt to move from a position one step in a direction.
 --   Returns the new position if the destination tile exists and is
@@ -21,6 +24,33 @@ tryMove dl pos dir =
   in case tileAt dl newPos of
        Just t | isWalkable t -> Just newPos
        _                     -> Nothing
+
+-- | What the player bumped into at the target tile.
+--   Priority: monster > NPC > chest > door > free tile > wall.
+data BumpTarget
+  = BumpMonster !Int !Monster
+  | BumpNPC     !Int
+  | BumpChest   !Int !Chest
+  | BumpClosedDoor
+  | BumpLockedDoor !KeyId
+  | BumpFree    !Pos
+  | BumpBlocked
+
+-- | Classify what occupies a target tile, encoding the bump
+--   priority as a flat decision rather than nested cases.
+classifyBump :: Pos -> GameState -> BumpTarget
+classifyBump target gs =
+  case monsterAt target (gsMonsters gs) of
+    Just (i, m) -> BumpMonster i m
+    Nothing -> case npcAt target (gsNPCs gs) of
+      Just (i, _) -> BumpNPC i
+      Nothing -> case chestAt target (gsChests gs) of
+        Just (ci, c) -> BumpChest ci c
+        Nothing -> case tileAt (gsLevel gs) target of
+          Just (Door Closed)       -> BumpClosedDoor
+          Just (Door (Locked kid)) -> BumpLockedDoor kid
+          Just t | isWalkable t    -> BumpFree target
+          _                        -> BumpBlocked
 
 -- | The subset of game state needed by 'dashSteps'.
 data DashContext = DashContext

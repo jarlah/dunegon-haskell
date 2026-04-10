@@ -335,56 +335,43 @@ applyAction act gs0 =
          in if shot then processMonsters gs' else gs'
        Move dir            ->
          let target = gsPlayerPos gs + dirToOffset dir
-         in case monsterAt target (gsMonsters gs) of
-              Just (i, m) -> processMonsters (playerAttack gs i m)
-              Nothing     -> case npcAt target (gsNPCs gs) of
-                Just (i, _) ->
-                  -- Bump-to-talk: open dialogue, monsters do NOT act.
-                  playerTalk i gs
-                Nothing -> case chestAt target (gsChests gs) of
-                  -- Bump-to-open: stepping into a chest spends the
-                  -- turn opening it (or acknowledging it's empty),
-                  -- same rhythm as bumping a closed door. The player
-                  -- does NOT move onto the chest's tile.
-                  Just (ci, c) ->
-                    processMonsters (playerOpenChest ci c gs)
-                  Nothing -> case tileAt (gsLevel gs) target of
-                    -- Bump-to-open: spending the turn opens a closed
-                    -- door in place. The player does not move this
-                    -- turn (just like bumping a wall), but the turn
-                    -- *does* advance so monsters react.
-                    Just (Door Closed) ->
-                      let gs' = gs { gsLevel = Door.openDoorAt target (gsLevel gs) }
-                          msg = "You open the door."
-                      in processMonsters
-                           (gs' { gsMessages = msg : gsMessages gs' })
-                    -- Bump-to-unlock: if the player is carrying the
-                    -- matching key, consume it, swap the door to
-                    -- 'Door Open', advance the turn. Otherwise show
-                    -- a "needs the X key" modal and DO NOT advance —
-                    -- the failed attempt is a free no-op like
-                    -- bumping a wall.
-                    Just (Door (Locked kid)) ->
-                      case findKeyIndex kid (gsInventory gs) of
-                        Just ki ->
-                          let inv' = Inv.dropItem ki (gsInventory gs)
-                              gs'  = gs { gsLevel = Door.openDoorAt target (gsLevel gs) }
-                              nm   = keyName kid
-                              msg  = "You unlock the door with the "
-                                  ++ nm ++ "."
-                          in processMonsters
-                               (gs' { gsInventory = inv'
-                                    , gsMessages  = msg : gsMessages gs'
-                                    })
-                        Nothing ->
-                          -- no key: raise the modal, no turn cost
-                          gs { gsLockedDoorPrompt = Just (keyName kid) }
-                    _ ->
-                      case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
-                        Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
-                        Nothing     -> gs  -- blocked; turn does not advance
+         in case M.classifyBump target gs of
+              M.BumpMonster i m  -> processMonsters (playerAttack gs i m)
+              M.BumpNPC i        -> playerTalk i gs
+              M.BumpChest ci c   -> processMonsters (playerOpenChest ci c gs)
+              M.BumpClosedDoor   -> playerOpenDoor target gs
+              M.BumpLockedDoor k -> playerUnlockDoor target k gs
+              M.BumpFree newPos  -> processMonsters (gs { gsPlayerPos = newPos })
+              M.BumpBlocked      -> gs
 
 
+
+-- | Bump-to-open: open a closed door at the target tile.
+--   The player does not move, but the turn advances.
+playerOpenDoor :: Pos -> GameState -> GameState
+playerOpenDoor target gs =
+  let gs' = gs { gsLevel    = Door.openDoorAt target (gsLevel gs)
+               , gsMessages = "You open the door." : gsMessages gs
+               }
+  in processMonsters gs'
+
+-- | Bump-to-unlock: if the player carries the matching key, consume
+--   it and open the door (turn advances). Otherwise show a modal
+--   (no turn cost).
+playerUnlockDoor :: Pos -> KeyId -> GameState -> GameState
+playerUnlockDoor target kid gs =
+  case findKeyIndex kid (gsInventory gs) of
+    Just ki ->
+      let inv' = Inv.dropItem ki (gsInventory gs)
+          gs'  = gs { gsLevel     = Door.openDoorAt target (gsLevel gs)
+                    , gsInventory = inv'
+                    , gsMessages  = ("You unlock the door with the "
+                                      ++ keyName kid ++ ".")
+                                    : gsMessages gs
+                    }
+      in processMonsters gs'
+    Nothing ->
+      gs { gsLockedDoorPrompt = Just (keyName kid) }
 
 -- | Attempt to close the door one step in the given direction. On
 --   success, stamp 'Door Closed', push a confirmation message, and
