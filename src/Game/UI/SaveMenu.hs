@@ -26,7 +26,9 @@ module Game.UI.SaveMenu
   ) where
 
 import Brick (EventM, get, modify, put)
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Char (isAsciiLower)
 import qualified Graphics.Vty as V
 
 import Game.Core
@@ -162,11 +164,9 @@ handleSaveMenuKey rFlags sm (V.KChar c)
       -- 'Y' as a forgiving shift-variant.
       'Y' -> performSaveAt sm (smCursor sm)
       _   -> pure ()
-  | c >= 'a' && c <= 'z' = do
+  | isAsciiLower c = do
       let idx = fromEnum c - fromEnum 'a'
-      if idx < length (smSlots sm)
-        then selectAt sm idx
-        else pure ()
+      when (idx < length (smSlots sm)) $ selectAt sm idx
   | c == 'x' = deleteAt rFlags sm (smCursor sm)
 handleSaveMenuKey _ _ V.KUp =
   modify $ \gs -> case gsSaveMenu gs of

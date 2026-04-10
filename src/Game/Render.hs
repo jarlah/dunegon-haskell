@@ -421,7 +421,7 @@ drawQuestLogModal gs =
       section title items fmt =
         let rows = case items of
               [] -> ["  (none)"]
-              xs -> map fmt (zip [(0 :: Int) ..] xs)
+              xs -> zipWith (curry fmt) [(0 :: Int) ..] xs
         in (title ++ ":") : rows
 
       activeLine (idx, q) =

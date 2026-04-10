@@ -17,7 +17,7 @@ spec = do
 
     it "can produce Orc at depth 2" $ do
       let kinds = [ fst (randomMonsterKind 2 (mkStdGen s)) | s <- [0..99] ]
-      any (== Orc) kinds `shouldBe` True
+      elem Orc kinds `shouldBe` True
 
   describe "spawnMonsters" $ do
     it "spawns some monsters in rooms" $ do

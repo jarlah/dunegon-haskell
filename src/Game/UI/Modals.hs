@@ -37,7 +37,8 @@ import Brick
   , vScrollBy, vScrollPage, vScrollToBeginning, vScrollToEnd, viewportScroll
   )
 import Control.Monad.IO.Class (liftIO)
-import Data.Char (ord)
+import Control.Monad (when)
+import Data.Char (isAsciiLower, isAsciiUpper, ord)
 import qualified Graphics.Vty as V
 
 import Game.AI.Runtime (AIRuntime)
@@ -112,7 +113,7 @@ handleQuestLogKey (V.KChar 'x') = do
     Just idx -> modify (abandonQuest idx)
     Nothing  -> pure ()
 handleQuestLogKey (V.KChar c)
-  | c >= 'a' && c <= 'z' = modify (stepQuestLogSelect c)
+  | isAsciiLower c = modify (stepQuestLogSelect c)
 handleQuestLogKey _ = pure ()
 
 -- | Keystrokes while an NPC dialogue modal is open. Lowercase
@@ -130,7 +131,7 @@ handleDialogueKey
 handleDialogueKey _ _ _ V.KEsc =
   modify (\gs -> gs { gsDialogue = Nothing })
 handleDialogueKey mAudio _ npcIdx (V.KChar c)
-  | c >= 'a' && c <= 'z' = do
+  | isAsciiLower c = do
       gs <- get
       case stepDialogueAccept npcIdx c gs of
         Just gs' -> do
@@ -140,7 +141,7 @@ handleDialogueKey mAudio _ npcIdx (V.KChar c)
           -- so they don't stare at an empty quest list.
           autoCloseIfIdle npcIdx
         Nothing  -> pure ()
-  | c >= 'A' && c <= 'Z' = do
+  | isAsciiUpper c = do
       gs <- get
       case stepDialogueTurnIn npcIdx c gs of
         Just gs' -> do
@@ -214,15 +215,13 @@ handleInventoryKey _ V.KEsc =
 handleInventoryKey _ (V.KChar 'i') =
   modify (\gs -> gs { gsInventoryOpen = False })
 handleInventoryKey mAudio (V.KChar c)
-  | c >= 'a' && c <= 'z' = do
+  | isAsciiLower c = do
       gs <- get
       let idx = ord c - ord 'a'
-      if idx < length (invItems (gsInventory gs))
-        then do
-          modify (\s -> s { gsInventoryOpen = False })
-          modify (applyAction (UseItem idx))
-          playEventsFor mAudio
-        else pure ()
+      when (idx < length (invItems (gsInventory gs))) $ do
+        modify (\s -> s { gsInventoryOpen = False })
+        modify (applyAction (UseItem idx))
+        playEventsFor mAudio
 handleInventoryKey _ _ = pure ()
 
 -- | Keystrokes while the "this door needs the X key" modal is

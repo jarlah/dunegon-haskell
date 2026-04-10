@@ -65,7 +65,7 @@ tickRegen rc
     counter  = rcCounter rc
     vis      = rcVisible rc
     monsters = rcMonsters rc
-    hostileVisible = any (\m -> any (`Set.member` vis) (monsterTiles m)) monsters
+    hostileVisible = any (any (`Set.member` vis) . monsterTiles) monsters
 
 -- | Advance the turn counter by one, unless dead or victory-frozen.
 tickTurnCounter :: Bool -> Maybe Int -> Int -> Int

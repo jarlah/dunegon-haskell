@@ -36,8 +36,8 @@ spec = do
       -- weighted picker that locks onto a single entry.
       let rolls = [ fst (rollChestLoot (mkStdGen s)) | s <- [0 .. 400] ]
       mapM_
-        (\item -> (item `elem` rolls) `shouldBe` True)
-        (map snd chestLootTable)
+        ((\item -> (item `elem` rolls) `shouldBe` True) . snd)
+        chestLootTable
 
   describe "tickChest" $ do
 

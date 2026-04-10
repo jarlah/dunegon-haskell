@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 -- | Non-blocking AI request pipeline.
 --
 --   The game's main thread is driven by a Brick event loop that

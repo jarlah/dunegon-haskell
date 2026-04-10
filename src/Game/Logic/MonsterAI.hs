@@ -60,9 +60,7 @@ monsterIntent dl playerPos blockedPositions sightRadius m
             , let newTiles   = offsetTiles newTopLeft footprint
             , all (canStandOn dl playerPos blockedPositions) newTiles
             ]
-      in case bestNeighbor playerPos candidates of
-           Just p  -> MiMove p
-           Nothing -> MiWait
+      in maybe MiWait MiMove (bestNeighbor playerPos candidates)
 
 -- | Can this monster see the player from its current position?
 --   Any footprint tile within the Euclidean sight radius AND with a
@@ -92,9 +90,7 @@ canStandOn :: DungeonLevel -> Pos -> [Pos] -> Pos -> Bool
 canStandOn dl playerPos blockedSet p =
   p /= playerPos
     && p `notElem` blockedSet
-    && case tileAt dl p of
-         Just t  -> isWalkable t
-         Nothing -> False
+    && maybe False isWalkable (tileAt dl p)
 
 -- | Pick whichever candidate position minimizes Chebyshev
 --   distance to the target. Prefers the first argument on ties.

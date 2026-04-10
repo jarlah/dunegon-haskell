@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 module Game.State.Types
 ( GameState(..)
 , LaunchOption(..)

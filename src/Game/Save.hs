@@ -74,12 +74,14 @@ module Game.Save
   ) where
 
 import           Control.Exception          (IOException, try)
+import           Control.Monad              (when)
 import           Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy       as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import           Data.Binary                (Binary (..), decodeOrFail, encode)
 import           Data.List                  (sortOn, isSuffixOf, stripPrefix)
+import           Data.Maybe                 (catMaybes)
 import           Data.Ord                   (Down (..))
 import           Data.Time.Clock            (UTCTime)
 import           Data.Vector.Binary         ()
@@ -129,8 +131,7 @@ instance Binary StdGen where
     in put a >> put b
   get = do
     a <- get
-    b <- get
-    pure (StdGen (seedSMGen a b))
+    StdGen . seedSMGen a <$> get
 
 --------------------------------------------------------------------
 -- Generic + Binary for every game type reachable from GameState.
@@ -257,7 +258,7 @@ decodeSave bs = do
   afterMagic <- checkMagic bs
   case decodeOrFail afterMagic of
     Left  (_, _, err)          -> Left (SaveCorrupt err)
-    Right (afterHeader, _, (_h :: SaveHeader)) ->
+    Right (afterHeader, _, _h :: SaveHeader) ->
       case decodeOrFail afterHeader of
         Left  (_, _, err)      -> Left (SaveCorrupt err)
         Right (remaining, _, gs)
@@ -352,7 +353,7 @@ listSaves = runSaveIO $ do
             , Just s <- [slotFromFileName (takeFileName f)]
             ]
       pairs <- liftIO $ mapM readMetaWithMTime candidates
-      let sorted = sortOn (Down . snd) [p | Just p <- pairs]
+      let sorted = sortOn (Down . snd) (catMaybes pairs)
       pure (map fst sorted)
   where
     -- Pair each save's header with its file mtime for sorting.
@@ -383,9 +384,7 @@ deleteSave :: SaveSlot -> IO (Either SaveError ())
 deleteSave slot = runSaveIO $ do
   path   <- saveIO (slotPath slot)
   exists <- tryIO (doesFileExist path)
-  if exists
-    then tryIO (removeFile path)
-    else pure ()
+  when exists $ tryIO (removeFile path)
 
 --------------------------------------------------------------------
 -- ExceptT helpers

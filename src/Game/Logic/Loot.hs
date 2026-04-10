@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 -- | Monster loot tables. Given a slain monster's kind and a RNG,
 --   roll zero or more items to drop at its feet.
 --
@@ -84,7 +85,7 @@ pickWeighted gen0 table =
        then Nothing
        else
          let (roll, gen1) = randomR (1, total) gen0
-         in fmap (\x -> (x, gen1)) (walk roll table)
+         in fmap (, gen1) (walk roll table)
   where
     walk _ []              = Nothing
     walk n ((w, x) : rest)

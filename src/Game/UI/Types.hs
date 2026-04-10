@@ -32,8 +32,8 @@ import qualified Game.Render as Render
 --   player running without @--wizard@ must not be able to invoke
 --   cheats just because they loaded a save that was written by a
 --   wizard session.
-data RuntimeFlags = RuntimeFlags
-  { rfWizardEnabled :: !Bool
+newtype RuntimeFlags = RuntimeFlags
+  { rfWizardEnabled :: Bool
     -- ^ 'True' iff the game was launched with @--wizard@ (or one of
     --   its aliases). Gates the cheat / wizard slash commands and
     --   controls whether cheat-tainted saves are visible in the

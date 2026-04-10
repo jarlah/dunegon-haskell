@@ -21,6 +21,7 @@ import           Data.Aeson             ((.:), (.:?), withObject)
 import qualified Data.ByteString.Lazy   as BL
 import qualified Data.Text              as T
 import           Data.Text              (Text)
+import           Data.Maybe              (fromMaybe)
 import qualified Data.Text.Encoding     as TE
 
 import           Game.AI.Client         (AIClient, sendPrompt)
@@ -86,10 +87,10 @@ buildQuest :: RawQuest -> Either String Quest
 buildQuest rq = do
   goal <- case T.toLower (rqGoalType rq) of
     "kill_monsters" ->
-      let n = clamp 1 20 (maybe 1 id (rqGoalValue rq))
+      let n = clamp 1 20 (fromMaybe 1 (rqGoalValue rq))
       in Right (GoalKillMonsters n)
     "reach_depth" ->
-      let d = clamp 2 11 (maybe 2 id (rqGoalValue rq))
+      let d = clamp 2 11 (fromMaybe 2 (rqGoalValue rq))
       in Right (GoalReachDepth d)
     "kill_boss" ->
       Right GoalKillBoss

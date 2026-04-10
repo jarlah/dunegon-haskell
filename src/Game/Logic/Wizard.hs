@@ -58,9 +58,7 @@ wizCmdSpawn kind playerPos dl monsters =
       free =
         [ p
         | p <- neighbors
-        , case tileAt dl p of
-            Just t  -> isWalkable t
-            Nothing -> False
+        , maybe False isWalkable (tileAt dl p)
         , not (Set.member p occupied)
         ]
   in case free of

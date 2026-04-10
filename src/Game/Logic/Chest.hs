@@ -113,7 +113,7 @@ tickChest c = case chestState c of
 --   Chests that are still 'ChestFull' or still counting down
 --   pass through unchanged.
 refillChests :: StdGen -> [Chest] -> ([Chest], StdGen)
-refillChests gen0 = go gen0
+refillChests = go
   where
     go g []       = ([], g)
     go g (c : cs) = case chestState c of

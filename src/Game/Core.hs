@@ -260,7 +260,7 @@ applyCommand cmd gs =
        -- and leave the state alone rather than crashing.
        _ -> gsMarked
               { gsMessages =
-                  ("Internal: safe command routed to applyCommand")
+                  "Internal: safe command routed to applyCommand"
                     : gsMessages gsMarked
               }
   where

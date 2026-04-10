@@ -119,7 +119,7 @@ spec = describe "Game.Logic.Dungeon.generateLevel" $ do
   it "prop_minimumRoomCount" $ property $
     \(seed :: Int) ->
       let (_, _, rooms) = levelFor seed
-      in length rooms >= 1
+      in not (null rooms)
 
   it "prop_noOverlappingRooms" $ property $
     \(seed :: Int) ->
@@ -164,8 +164,7 @@ spec = describe "Game.Logic.Dungeon.generateLevel" $ do
             , tileAt dl (V2 x y) == Just StairsDown
             ]
           downTiles      = map (tileAt dl) downIdxs
-      in all (not . maybe False isDoorTile)
-             (startTile : downTiles)
+      in not (any (maybe False isDoorTile) (startTile : downTiles))
 
   it "prop_spawnRoomHasNoClosedDoor" $ property $
     \(seed :: Int) ->

@@ -35,7 +35,7 @@ module Game.AI.Runtime
 
 import Brick (EventM, get, modify)
 import qualified Brick.BChan as BChan
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.Set as Set
@@ -109,8 +109,8 @@ data AIRuntime = AIRuntime
 --   completed 'AIResponse' from the worker thread back to the main
 --   event loop via a 'BChan.BChan'; the event loop then folds it
 --   into 'GameState' by calling 'applyAIResponse'.
-data AppEvent
-  = AIResult !AIResponse
+newtype AppEvent
+  = AIResult AIResponse
   deriving (Show)
 
 --------------------------------------------------------------------
@@ -186,7 +186,7 @@ maybeFireGreeting rt
                 if slot `elem` ps
                   then (ps, True)
                   else (slot : ps, False)
-              when (not already) $ liftIO $ do
+              unless already $ liftIO $ do
                 tok <- atomicModifyIORef' (aiNextToken rt) $ \n -> (n + 1, n + 1)
                 atomicModifyIORef' (aiTokenMap rt) $ \m -> ((tok, slot) : m, ())
                 let prompt = AIPrompts.greetingPrompt

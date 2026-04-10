@@ -16,7 +16,7 @@ module Game.Audio
 
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Exception (try, SomeException)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, void, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Sound.ProteaAudio.SDL as PA
 
@@ -150,9 +150,7 @@ shutdownAudio :: AudioSystem -> IO ()
 shutdownAudio as = do
   ms <- readIORef (asMusicRef as)
   case msFadeThread ms of
-    Just tid -> do
-      _ <- (try (killThread tid)) :: IO (Either SomeException ())
-      pure ()
+    Just tid -> void (try (killThread tid) :: IO (Either SomeException ()))
     Nothing  -> pure ()
   PA.finishAudio
 
@@ -176,18 +174,16 @@ setMusic as target = do
     -- hard-stop whatever it was fading out, so we don't leave an
     -- orphaned half-volume loop playing underneath the new fade.
     case msFadeThread ms of
-      Just tid -> (try (killThread tid)
-                   :: IO (Either SomeException ())) >> pure ()
+      Just tid -> void (try (killThread tid) :: IO (Either SomeException ()))
       Nothing  -> pure ()
     case msPrevSound ms of
-      Just s  -> (try (PA.soundStop s)
-                   :: IO (Either SomeException Bool)) >> pure ()
+      Just s  -> void (try (PA.soundStop s) :: IO (Either SomeException Bool))
       Nothing -> pure ()
     -- Start the new track silently so the ramp can bring it up.
     let sample = case target of
           DungeonMusic -> asDungeonMusic as
           BossMusic    -> asBossMusic    as
-    r <- (try (PA.soundLoop sample 0.0 0.0 0.0 1.0))
+    r <- try (PA.soundLoop sample 0.0 0.0 0.0 1.0)
            :: IO (Either SomeException PA.Sound)
     case r of
       Left _         -> pure ()
@@ -195,7 +191,7 @@ setMusic as target = do
         let prev   = msCurrSound ms
             newGen = msFadeGen ms + 1
         tid <- forkIO (runFade (asMusicRef as) newGen prev newSound)
-        atomicModifyIORef' (asMusicRef as) $ \_ ->
+        atomicModifyIORef' (asMusicRef as) $ const
           ( MusicState
               { msCurrTrack  = target
               , msCurrSound  = newSound
@@ -221,7 +217,7 @@ runFade ref myGen prev new = do
           _ <- PA.soundUpdate prev False (1 - t) (1 - t) 0 1
           _ <- PA.soundUpdate new  False t       t       0 1
           threadDelay stepUs) :: IO (Either SomeException ())
-  _ <- (try (PA.soundStop prev)) :: IO (Either SomeException Bool)
+  _ <- try (PA.soundStop prev) :: IO (Either SomeException Bool)
   -- Only clear the fade bookkeeping if *this* fade generation is
   -- still the latest — otherwise a newer setMusic already swapped
   -- in a fresh thread + prevSound pair that we must not clobber.
@@ -253,6 +249,5 @@ playEvent as ev = do
         -- dedicated victory fanfare can slot in later via a new
         -- AudioSystem field without touching the dispatch table.
         EvBossKilled    -> asLevelUp as
-  _ <- (try (PA.soundPlay sample 1.0 1.0 0.0 1.0))
-         :: IO (Either SomeException PA.Sound)
-  pure ()
+  void (try (PA.soundPlay sample 1.0 1.0 0.0 1.0)
+         :: IO (Either SomeException PA.Sound))
