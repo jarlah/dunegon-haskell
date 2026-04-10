@@ -33,6 +33,7 @@ library
   exposed-modules:
     Game.Types
     Game.GameState
+    Game.State.Types
     Game.Logic.Movement
     Game.Logic.Dungeon
     Game.Logic.Combat

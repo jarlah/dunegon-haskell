@@ -88,31 +88,6 @@ isDoorTile :: Tile -> Bool
 isDoorTile (Door _) = True
 isDoorTile _        = False
 
--- | Flood fill from 'start' treating walls AND locked doors as
---   impassable — the set of tiles a keyless player can reach
---   without opening the lock. This is the test-side mirror of
---   'Game.GameState.spawnSideReachable', duplicated so this spec
---   stays standalone (no dependency on the game state module from
---   the dungeon generator spec).
-spawnSideFlood :: DungeonLevel -> Pos -> Set.Set Pos
-spawnSideFlood dl start = go (Set.singleton start) [start]
-  where
-    passable p = case tileAt dl p of
-      Just Wall              -> False
-      Just (Door (Locked _)) -> False
-      Just _                 -> True
-      Nothing                -> False
-    go visited []       = visited
-    go visited (p : qs) =
-      let neighbors = [ p + dirToOffset d | d <- [N, S, E, W] ]
-          fresh     =
-            [ n
-            | n <- neighbors
-            , not (Set.member n visited)
-            , passable n
-            ]
-      in go (foldr Set.insert visited fresh) (qs ++ fresh)
-
 -- | The ring of tiles one step *outside* a room's floor area.
 --   Mirrors 'roomOuterWallTiles' in 'Game.Logic.Dungeon', which
 --   isn't exported; duplicating a 4-line helper here is cheaper

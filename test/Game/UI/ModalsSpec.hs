@@ -106,7 +106,9 @@ spec = do
                     , gsQuests = []
                     }
       case stepDialogueAccept 0 'a' gs of
-        Just gs' -> length (npcOffers (head (gsNPCs gs'))) `shouldBe` 1
+        Just gs' -> case gsNPCs gs' of
+          (n:_) -> length (npcOffers n) `shouldBe` 1
+          []    -> expectationFailure "expected at least one NPC"
         Nothing  -> expectationFailure "expected Just, got Nothing"
 
     it "returns Nothing when the NPC index is out of range" $ do

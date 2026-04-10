@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Game.Logic.QuestSpec (spec) where
 
 import Test.Hspec
@@ -107,19 +108,19 @@ spec = describe "Game.Logic.Quest" $ do
   describe "QuestNotStarted (un-accepted offers)" $ do
     it "does not advance a kill quest that hasn't been accepted yet" $ do
       let offer = (fresh (GoalKillMonsters 3)) { qStatus = QuestNotStarted }
-          after = advanceQuest EvKilledMonster offer
+          result = advanceQuest EvKilledMonster offer
       -- Progress does not move, status stays NotStarted.
       -- (The existing advanceQuest only advances QuestActive / matching
       -- goals; this test pins down the un-accepted behavior so M10 can
       -- rely on it.)
-      qProgress after `shouldBe` 0
-      qStatus   after `shouldBe` QuestNotStarted
+      qProgress result `shouldBe` 0
+      qStatus   result `shouldBe` QuestNotStarted
 
     it "does not advance a depth quest that hasn't been accepted yet" $ do
       let offer = (fresh (GoalReachDepth 3)) { qStatus = QuestNotStarted }
-          after = advanceQuest (EvEnteredDepth 5) offer
-      qProgress after `shouldBe` 0
-      qStatus   after `shouldBe` QuestNotStarted
+          result = advanceQuest (EvEnteredDepth 5) offer
+      qProgress result `shouldBe` 0
+      qStatus   result `shouldBe` QuestNotStarted
 
   describe "terminal absorption" $ do
     it "prop: a ready quest stays ready under any further event" $

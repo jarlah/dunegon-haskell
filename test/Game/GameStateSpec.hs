@@ -369,11 +369,14 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
                 { gsNPCs = [npc], gsDialogue = Just 0 }
         gs' = acceptQuestFromNPC 0 0 gs
     -- The offer list on the NPC shrinks by one.
-    length (npcOffers (head (gsNPCs gs'))) `shouldBe`
-      length (npcOffers npc) - 1
+    case gsNPCs gs' of
+      (n:_) -> length (npcOffers n) `shouldBe` length (npcOffers npc) - 1
+      []    -> expectationFailure "expected at least one NPC"
     -- And the accepted quest lands in gsQuests with QuestActive status.
     length (gsQuests gs') `shouldBe` 1
-    qStatus (head (gsQuests gs')) `shouldBe` QuestActive
+    case gsQuests gs' of
+      (q:_) -> qStatus q `shouldBe` QuestActive
+      []    -> expectationFailure "expected at least one quest"
 
   it "a killed monster advances an accepted NPC quest to ready-to-turn-in" $ do
     -- Accept a kill-1-monster quest, then kill a rat adjacent to
@@ -388,7 +391,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs1         = acceptQuestFromNPC 0 0 gs0
         gs2         = applyAction (Move N) gs1     -- kill the rat
     length (gsQuests gs2) `shouldBe` 1
-    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
+    case gsQuests gs2 of
+      (q:_) -> qStatus q `shouldBe` QuestReadyToTurnIn
+      []    -> expectationFailure "expected at least one quest"
 
   -- ----------------------------------------------------------------
   -- M10.2: quest log / abandon
@@ -450,7 +455,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
                   { gsNPCs = [npc] }
         gs1   = acceptQuestFromNPC 0 0 gs0
         gs2   = applyAction (Move N) gs1
-    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
+    case gsQuests gs2 of
+      (q:_) -> qStatus q `shouldBe` QuestReadyToTurnIn
+      []    -> expectationFailure "expected at least one quest"
     -- 5 XP from the rat kill itself, no 100-XP reward yet.
     sXP (gsPlayerStats gs2) `shouldBe` 5
 
@@ -465,7 +472,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs2   = applyAction (Move N) gs1          -- kill, goes ready
         xpPre = sXP (gsPlayerStats gs2)
         gs3   = turnInQuest 0 0 gs2               -- hand in at original NPC
-    qStatus (head (gsQuests gs3)) `shouldBe` QuestCompleted
+    case gsQuests gs3 of
+      (q:_) -> qStatus q `shouldBe` QuestCompleted
+      []    -> expectationFailure "expected at least one quest"
     sXP (gsPlayerStats gs3) `shouldBe` xpPre + 10
     EvQuestTurnedIn `elem` gsEvents gs3 `shouldBe` True
 
@@ -489,7 +498,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs2      = applyAction (Move N) gs1         -- kill, goes ready
         xpPre    = sXP (gsPlayerStats gs2)
         gs3      = turnInQuest 1 0 gs2              -- hand in at the Stranger
-    qStatus (head (gsQuests gs3)) `shouldBe` QuestCompleted
+    case gsQuests gs3 of
+      (q:_) -> qStatus q `shouldBe` QuestCompleted
+      []    -> expectationFailure "expected at least one quest"
     sXP (gsPlayerStats gs3) `shouldBe` xpPre + (20 `div` 2)
 
   it "turn-in can trigger a level up and fire EvLevelUp" $ do
@@ -544,7 +555,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs1    = acceptQuestFromNPC 0 0 gs0
         gs2    = applyAction (Move W) gs1
     length (gsQuests gs2) `shouldBe` 1
-    qStatus (head (gsQuests gs2)) `shouldBe` QuestReadyToTurnIn
+    case gsQuests gs2 of
+      (q:_) -> qStatus q `shouldBe` QuestReadyToTurnIn
+      []    -> expectationFailure "expected at least one quest"
 
   it "GoalKillBoss quest does NOT advance on a regular monster kill" $ do
     let offer = (mkQuest "Slay the Dragon" GoalKillBoss)
@@ -556,7 +569,9 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
         gs1   = acceptQuestFromNPC 0 0 gs0
         gs2   = applyAction (Move N) gs1
     -- Rat dies but the boss-kill quest is still active, not ready.
-    qStatus (head (gsQuests gs2)) `shouldBe` QuestActive
+    case gsQuests gs2 of
+      (q:_) -> qStatus q `shouldBe` QuestActive
+      []    -> expectationFailure "expected at least one quest"
 
   it "descending onto the boss depth generates a boss floor" $ do
     -- Force the next-floor generation into boss mode by setting

@@ -97,8 +97,9 @@ spec = do
   describe "entrySlot" $ do
 
     it "maps the quicksave row back to QuickSlot" $ do
-      let (eq : _) = buildSaveMenuEntries []
-      entrySlot eq `shouldBe` QuickSlot
+      case buildSaveMenuEntries [] of
+        (eq : _) -> entrySlot eq `shouldBe` QuickSlot
+        []       -> expectationFailure "expected at least one entry"
 
     it "maps a numbered row back to its NumberedSlot" $ do
       let entries = buildSaveMenuEntries []

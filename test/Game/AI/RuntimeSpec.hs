@@ -17,7 +17,7 @@ import Test.Hspec
 
 import Game.AI.Runtime (appendQuestToFirstNPC, describeNPCRole, updateNPCGreet)
 import Game.GameState
-import Game.Logic.Quest (Quest (..), QuestGoal (..), QuestStatus (..), mkQuest)
+import Game.Logic.Quest (Quest (..), QuestGoal (..), mkQuest)
 import Game.Types
 
 -- | A minimal 5x5 level used only as a place to anchor the fixture.

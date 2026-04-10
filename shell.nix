@@ -17,6 +17,7 @@ pkgs.mkShell {
     # Haskell toolchain
     hsPkgs.ghc
     hsPkgs.haskell-language-server
+    hsPkgs.hspec-discover
     pkgs.stack
     pkgs.cabal-install
 

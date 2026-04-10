@@ -5,7 +5,6 @@ import           Test.Hspec
 
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Yaml             as Yaml
-import           System.Directory      (removeFile)
 import           System.FilePath       ((</>))
 import           System.IO             (hClose)
 import           System.IO.Temp        (withSystemTempDirectory, withSystemTempFile)

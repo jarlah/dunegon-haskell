@@ -1,8 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
--- | Property + example tests for 'Game.Logic.Inventory'.
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Game.Logic.InventorySpec (spec) where
 
-import Data.Maybe (fromJust)
 import Test.Hspec
 import Test.QuickCheck
 
@@ -51,17 +50,19 @@ spec = describe "Game.Logic.Inventory" $ do
     it "empty inventory has count zero" $
       inventoryCount emptyInventory `shouldBe` 0
 
-    it "adding then removing by index yields the same item" $ property $ \(it :: Item) ->
-      case addItem it emptyInventory of
+    it "adding then removing by index yields the same item" $ property $ \(anItem :: Item) ->
+      case addItem anItem emptyInventory of
         Left  _    -> property False
         Right inv' -> case removeItem 0 inv' of
-          Just (back, _) -> back === it
+          Just (back, _) -> back === anItem
           Nothing        -> property False
 
-    it "pickUpThenDrop returns the item and restores the inventory" $ property $ \(it :: Item) ->
-      let Right inv' = addItem it emptyInventory
-          (back, restored) = fromJust (removeItem 0 inv')
-      in back === it .&&. restored === emptyInventory
+    it "pickUpThenDrop returns the item and restores the inventory" $ property $ \(anItem :: Item) ->
+      case addItem anItem emptyInventory of
+        Right inv' -> case removeItem 0 inv' of
+          Just (back, restored) -> back === anItem .&&. restored === emptyInventory
+          Nothing               -> property False
+        Left _ -> property False
 
     it "cannot exceed capacity" $ property $ \(its :: [Item]) ->
       let attempts = take (invCapacity + 5) its
@@ -101,33 +102,39 @@ spec = describe "Game.Logic.Inventory" $ do
   describe "equip" $ do
 
     it "equipping a weapon from the bag moves it to the weapon slot" $ do
-      let Right inv = addItem (IWeapon ShortSword) emptyInventory
+      let inv = case addItem (IWeapon ShortSword) emptyInventory of
+                  Right v -> v; Left e -> error (show e)
           inv'      = equip 0 inv
       invWeapon inv' `shouldBe` Just ShortSword
       invItems  inv' `shouldBe` []
 
     it "equipping a second weapon swaps the old one back into the bag" $ do
-      let Right inv1 = addItem (IWeapon ShortSword) emptyInventory
+      let inv1 = case addItem (IWeapon ShortSword) emptyInventory of
+                   Right v -> v; Left e -> error (show e)
           inv2       = equip 0 inv1            -- ShortSword equipped
-          Right inv3 = addItem (IWeapon LongSword) inv2
+          inv3 = case addItem (IWeapon LongSword) inv2 of
+                   Right v -> v; Left e -> error (show e)
           inv4       = equip 0 inv3            -- LongSword equipped, ShortSword back
       invWeapon inv4 `shouldBe` Just LongSword
       invItems  inv4 `shouldBe` [IWeapon ShortSword]
 
     it "equipping an armor from the bag moves it to the armor slot" $ do
-      let Right inv = addItem (IArmor LeatherArmor) emptyInventory
+      let inv = case addItem (IArmor LeatherArmor) emptyInventory of
+                  Right v -> v; Left e -> error (show e)
           inv'      = equip 0 inv
       invArmor inv' `shouldBe` Just LeatherArmor
 
   describe "effectiveStats" $ do
 
     it "equipping a weapon increases attack" $ property $ forAll genStats $ \s ->
-      let Right inv1 = addItem (IWeapon ShortSword) emptyInventory
+      let inv1 = case addItem (IWeapon ShortSword) emptyInventory of
+                   Right v -> v; Left e -> error (show e)
           inv2       = equip 0 inv1
       in sAttack (effectiveStats s inv2) > sAttack s
 
     it "equipping armor increases defense" $ property $ forAll genStats $ \s ->
-      let Right inv1 = addItem (IArmor ChainMail) emptyInventory
+      let inv1 = case addItem (IArmor ChainMail) emptyInventory of
+                   Right v -> v; Left e -> error (show e)
           inv2       = equip 0 inv1
       in sDefense (effectiveStats s inv2) > sDefense s
 
