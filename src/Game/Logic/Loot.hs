@@ -84,9 +84,9 @@ pickWeighted gen0 table =
        then Nothing
        else
          let (roll, gen1) = randomR (1, total) gen0
-         in Just (walk roll table, gen1)
+         in fmap (\x -> (x, gen1)) (walk roll table)
   where
-    walk _ []                        = error "pickWeighted: empty walk"
+    walk _ []              = Nothing
     walk n ((w, x) : rest)
-      | n <= w    = x
+      | n <= w    = Just x
       | otherwise = walk (n - w) rest
