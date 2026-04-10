@@ -182,8 +182,7 @@ extractReply cfg body = case aiProvider cfg of
     Right v  -> case v of
       A.Object o
         | Just (A.Array choices) <- lookupKey "choices" o
-        , not (V.null choices)
-        , A.Object c0 <- V.head choices
+        , Just (A.Object c0)    <- choices V.!? 0
         , Just (A.Object msg) <- lookupKey "message" c0
         , Just (A.String t)   <- lookupKey "content" msg
           -> Right t
