@@ -2,6 +2,7 @@ module Game.Utils.List(
  updateAt
 ,removeAt
 ,findIndexed
+,safeIndex
 ) where
 
 ------------------------------------------------------------
@@ -9,7 +10,15 @@ module Game.Utils.List(
 ------------------------------------------------------------
 
 updateAt :: Int -> (a -> a) -> [a] -> [a]
-updateAt i f xs = take i xs ++ [f (xs !! i)] ++ drop (i + 1) xs
+updateAt i f xs
+  | i < 0 || i >= length xs = xs
+  | otherwise = take i xs ++ [f (xs !! i)] ++ drop (i + 1) xs
+
+-- | Safe list indexing — returns 'Nothing' for out-of-bounds indices.
+safeIndex :: Int -> [a] -> Maybe a
+safeIndex n xs
+  | n < 0 || n >= length xs = Nothing
+  | otherwise               = Just (xs !! n)
 
 removeAt :: Int -> [a] -> [a]
 removeAt i xs = take i xs ++ drop (i + 1) xs

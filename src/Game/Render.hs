@@ -24,6 +24,7 @@ import Data.Set (Set)
 import Linear (V2(..))
 
 import Game.Core
+import Game.Utils.List (safeIndex)
 import Game.Logic.Chest (Chest(..), ChestState(..))
 import qualified Game.Logic.Inventory as Inv
 import Game.Logic.Progression (xpForNextLevel)
@@ -154,7 +155,7 @@ drawGame wizardEnabled gs =
        -- New Game / Continue / Load / Quit.
        Just lm -> [drawLaunchMenu gs lm]
        Nothing -> case gsDialogue gs of
-         Just i | Just npc <- nthMaybe i (gsNPCs gs) ->
+         Just i | Just npc <- safeIndex i (gsNPCs gs) ->
            [drawDialogueModal (gsQuests gs) i npc, baseLayer]
          _
            | gsVictory      gs  -> [drawVictoryModal gs, baseLayer]
@@ -166,10 +167,6 @@ drawGame wizardEnabled gs =
            | Just keyNm <- gsLockedDoorPrompt gs ->
                [drawLockedDoorModal keyNm, baseLayer]
            | otherwise          -> withRoomPanel [baseLayer]
-  where
-    nthMaybe n xs
-      | n < 0 || n >= length xs = Nothing
-      | otherwise               = Just (xs !! n)
 
 -- | The line between the map and the status bar. When the
 --   slash-command prompt is closed it's a blank spacer that holds

@@ -65,7 +65,7 @@ import Game.State.Types
   , LaunchMenu(..), SaveMenu(..), SaveMenuMode(..), SaveMenuEntry(..)
   , DirectionalAction(..), emit
   )
-import Game.Utils.List (updateAt, removeAt)
+import Game.Utils.List (updateAt, removeAt, safeIndex)
 import Game.Logic.Constants
   ( fovRadius, monsterSightRadius, regenInterval
   , defaultPlayerStats, dashMaxSteps, dashCooldownTurns, launchOptions
@@ -555,10 +555,6 @@ acceptQuestFromNPC npcIdx offerIdx gs =
               , gsQuests   = gsQuests gs ++ [accepted]
               , gsMessages = msg : gsMessages gs
               }
-  where
-    safeIndex n xs
-      | n < 0 || n >= length xs = Nothing
-      | otherwise               = Just (xs !! n)
 
 -- | Turn in a ready quest at an NPC. 'questIdx' indexes into the
 --   /ready-only/ sub-list of 'gsQuests' (so the dialogue can show
@@ -601,10 +597,6 @@ turnInQuest npcIdx readyIdx gs =
                                    ++ [EvQuestTurnedIn]
                                    ++ replicate ups EvLevelUp
                    }
-  where
-    safeIndex n xs
-      | n < 0 || n >= length xs = Nothing
-      | otherwise               = Just (xs !! n)
 
 playerAttack :: GameState -> Int -> Monster -> GameState
 playerAttack gs i m =
@@ -701,7 +693,7 @@ playerPickup gs =
 --   goes back to the bag).
 playerUseItem :: Int -> GameState -> GameState
 playerUseItem idx gs =
-  case lookupBag idx (gsInventory gs) of
+  case safeIndex idx (invItems (gsInventory gs)) of
     Nothing -> gs { gsMessages = "No such item." : gsMessages gs }
     Just item -> case item of
       IPotion p ->
@@ -745,10 +737,6 @@ playerUseItem idx gs =
                "You check your quiver and carry on."
                : gsMessages gs
            }
-  where
-    lookupBag i inv
-      | i < 0 || i >= length (invItems inv) = Nothing
-      | otherwise                           = Just (invItems inv !! i)
 
 ------------------------------------------------------------
 -- Stairs and level transitions
