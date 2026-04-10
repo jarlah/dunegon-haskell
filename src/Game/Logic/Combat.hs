@@ -14,11 +14,11 @@ module Game.Logic.Combat
 
 import System.Random (StdGen, randomR)
 
-import Game.Types (Stats(..), Monster (..), GameEvent (..), isBoss, monsterName)
-import Game.State.Types (GameState(..))
+import Game.Types (Stats(..), Monster (..), GameEvent (..), isBoss, monsterName, itemName)
+import Game.State.Types (GameState(..), emit)
 import qualified Game.Logic.Progression as P
 import qualified Game.Logic.Loot as Loot
-import Game.Logic.Quest (QuestEvent(..))
+import Game.Logic.Quest (QuestEvent(..), fireQuestEvent)
 import Game.Utils.List (updateAt, removeAt)
 
 newtype Damage = Damage { unDamage :: Int }
@@ -180,7 +180,10 @@ applyHitResult gs i m result hitMsgs =
         (combatEv : levelEvs ++ bossEvs)
       questEvs = if wasBoss then [EvKilledMonster, EvKilledBoss]
                             else [EvKilledMonster]
-      fireAll gss = foldl (flip fireQuestEvent) gss questEvs
+      applyQuestEv ev s =
+        let (qs, ms) = fireQuestEvent ev (gsQuests s)
+        in s { gsQuests = qs, gsMessages = reverse ms ++ gsMessages s }
+      fireAll gss = foldl (flip applyQuestEv) gss questEvs
   in if killed then fireAll gs' else gs'
 
 -- | Map a combat result to the event the *attacker* cares about

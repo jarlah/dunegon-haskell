@@ -58,13 +58,13 @@ import qualified Game.Logic.Progression as P
 import Game.Logic.MonsterAI (MonsterIntent(..), monsterIntent)
 import Game.Logic.Quest
   ( Quest(..), QuestEvent(..), QuestGoal(..), QuestStatus(..)
-  , advanceAll, isReady, mkQuest
+  , mkQuest, fireQuestEvent
   )
 import Data.Maybe (isJust)
 import Game.State.Types
   ( LaunchOption(..), GameState(..), NPC(..), ParkedLevel(..)
   , LaunchMenu(..), SaveMenu(..), SaveMenuMode(..), SaveMenuEntry(..)
-  , DirectionalAction(..)
+  , DirectionalAction(..), emit
   )
 import Game.Utils.List (updateAt, removeAt)
 
@@ -497,7 +497,8 @@ wizCmdDescend gs =
         Nothing ->
           generateAndEnter nextDepth gsParked
       gs'' = wizMsg ("descended to depth " ++ show nextDepth ++ ".") gs'
-  in fireQuestEvent (EvEnteredDepth nextDepth) gs''
+      (quests', qMsgs) = fireQuestEvent (EvEnteredDepth nextDepth) (gsQuests gs'')
+    in gs'' { gsQuests = quests', gsMessages = reverse qMsgs ++ gsMessages gs'' }
 
 -- | Force-ascend. Refuses at depth 1 with a message, otherwise
 --   behaves like 'playerAscend' minus the stairs-tile check.
@@ -593,35 +594,6 @@ applyAction act gs0 =
                       case M.tryMove (gsLevel gs) (gsPlayerPos gs) dir of
                         Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
                         Nothing     -> gs  -- blocked; turn does not advance
-
--- | Append events to the running per-turn log.
-emit :: GameState -> [GameEvent] -> GameState
-emit gs evs = gs { gsEvents = gsEvents gs ++ evs }
-
--- | Run a 'QuestEvent' through every quest in 'gsQuests' and surface
---   a "Quest complete: NAME!" message for any quest that flips from
---   non-completed to completed as a result. Returns the updated
---   state with the new quest list and any completion messages
---   prepended to 'gsMessages'.
-fireQuestEvent :: QuestEvent -> GameState -> GameState
-fireQuestEvent ev gs =
-  let before      = gsQuests gs
-      after       = advanceAll ev before
-      -- Pair old and new by position; a quest "just became ready"
-      -- if it wasn't ready before and is now. Under M12 goal-met
-      -- quests flip to 'QuestReadyToTurnIn' (not 'QuestCompleted')
-      -- so this is the right place to tell the player their quest
-      -- is waiting on a turn-in.
-      newlyReady  =
-        [ qName q'
-        | (q, q') <- zip before after
-        , not (isReady q)
-        , isReady q'
-        ]
-      msgs = [ "Quest ready to turn in: " ++ n ++ "!" | n <- newlyReady ]
-  in gs { gsQuests   = after
-        , gsMessages = reverse msgs ++ gsMessages gs
-        }
 
 -- | Find a monster occupying the given tile, if any. Uses
 --   'monsterOccupies' so that multi-tile bosses resolve on any
@@ -1429,7 +1401,8 @@ playerDescend gs =
             Nothing ->
               generateAndEnter nextDepth gsParked
           gs'' = gs' { gsMessages = ("You descend to depth " ++ show nextDepth ++ ".") : gsMessages gs' }
-      in fireQuestEvent (EvEnteredDepth nextDepth) gs''
+          (quests', qMsgs) = fireQuestEvent (EvEnteredDepth nextDepth) (gsQuests gs'')
+      in gs'' { gsQuests = quests', gsMessages = reverse qMsgs ++ gsMessages gs'' }
     _ ->
       gs { gsMessages = "There are no stairs down here." : gsMessages gs }
 
