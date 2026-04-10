@@ -16,7 +16,7 @@ import System.Random (mkStdGen)
 import Test.Hspec
 
 import Game.AI.Runtime (appendQuestToFirstNPC, describeNPCRole, updateNPCGreet)
-import Game.GameState
+import Game.Core
 import Game.Logic.Quest (Quest (..), QuestGoal (..), mkQuest)
 import Game.Types
 

@@ -30,7 +30,7 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Graphics.Vty as V
 
 import qualified Game.Audio as Audio
-import Game.GameState
+import Game.Core
 import Game.Logic.Command (Command (..), isCheatCommand, parseCommand)
 import qualified Game.Save as Save
 import Game.Types (GameAction (..))

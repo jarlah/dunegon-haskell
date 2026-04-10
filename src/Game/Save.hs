@@ -5,7 +5,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 -- ^ Game.Save is deliberately the single home for every Binary
 -- instance in the project. Centralizing them here keeps Game.Types
--- / Game.GameState / Game.Logic.* free of serialization concerns,
+-- / Game.Core / Game.Logic.* free of serialization concerns,
 -- at the cost of every instance being technically orphan. That's
 -- an intentional tradeoff, so the warning is suppressed module-wide.
 -- | Save-game persistence layer for 'GameState'.
@@ -94,7 +94,7 @@ import           System.Directory
   )
 import           System.FilePath            ((</>), (<.>), takeFileName)
 
-import           Game.GameState
+import           Game.Core
 import           Game.Logic.Chest           (Chest (..), ChestState (..))
 import           Game.Logic.Quest
 import           Game.Save.Types
@@ -132,7 +132,7 @@ instance Binary StdGen where
 --------------------------------------------------------------------
 -- Generic + Binary for every game type reachable from GameState.
 --
--- StandaloneDeriving lets us keep Game.Types / Game.GameState /
+-- StandaloneDeriving lets us keep Game.Types / Game.Core /
 -- Game.Logic.Quest / Game.Logic.Dungeon completely free of
 -- serialization concerns — every type is stock-derivable because
 -- its constructors are exported. Orphan warnings are not enabled

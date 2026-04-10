@@ -26,7 +26,7 @@ import qualified Game.Render as Render
 --   record so the event loop only has to close over one value, and
 --   so new flags can be added without rewiring every handler.
 --
---   Deliberately not in 'Game.GameState.GameState' — these are
+--   Deliberately not in 'Game.Core.GameState' — these are
 --   capabilities of /this/ process launch, not of the saved game,
 --   and they must not round-trip through 'Data.Binary.Binary'. A
 --   player running without @--wizard@ must not be able to invoke

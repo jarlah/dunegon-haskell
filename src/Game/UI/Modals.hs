@@ -42,7 +42,7 @@ import qualified Graphics.Vty as V
 
 import Game.AI.Runtime (AIRuntime)
 import qualified Game.Audio as Audio
-import Game.GameState
+import Game.Core
 import Game.Logic.Quest (Quest (..), QuestStatus (..))
 import Game.Types (Dir (..), GameAction (..), Inventory (..))
 import Game.UI.Types (Name (..))

@@ -1,10 +1,10 @@
 {-# LANGUAGE DeriveGeneric #-}
 -- | Shared save-system types with no dependency on 'GameState'.
 --
---   This module exists so 'Game.GameState' can carry a
---   'Game.GameState.SaveMenu' field (for the in-game save/load
+--   This module exists so 'Game.Core' can carry a
+--   'Game.Core.SaveMenu' field (for the in-game save/load
 --   picker UI) without creating an import cycle with 'Game.Save',
---   which itself imports 'Game.GameState' to serialize it.
+--   which itself imports 'Game.Core' to serialize it.
 --
 --   Every type here has a 'Binary' instance so that if it ever ends
 --   up transitively reachable from 'GameState', the derivation in

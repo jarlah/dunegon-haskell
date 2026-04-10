@@ -2,7 +2,7 @@
 --   'walkRay' helper and 'resolveShot' directly, so the fixtures
 --   are tiny hand-built levels and plain closures rather than
 --   real 'GameState' values. Integration tests that drive
---   'fireArrow' end-to-end live in 'Game.GameStateSpec'.
+--   'fireArrow' end-to-end live in 'Game.CoreSpec'.
 module Game.Logic.RangedSpec (spec) where
 
 import qualified Data.Vector          as V
@@ -36,7 +36,7 @@ withTile (V2 x y) t dl =
 
 -- | Straight line of up to 'arrowRange' tiles starting one step
 --   north of the player. Matches the construction inside
---   'Game.GameState.fireArrow'.
+--   'Game.Core.fireArrow'.
 northPath :: Pos -> [Pos]
 northPath start = [ start + V2 0 (-k) | k <- [1 .. arrowRange] ]
 

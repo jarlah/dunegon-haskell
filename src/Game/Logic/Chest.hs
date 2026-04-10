@@ -15,7 +15,7 @@
 --   no 'GameState' dependency, no rendering. It exposes the types,
 --   the loot table, the refill constant, and a couple of small
 --   helpers. Wiring into 'GameState' (field, tick hook, bump-to-
---   open, render) lives in "Game.GameState" and "Game.Render".
+--   open, render) lives in "Game.Core" and "Game.Render".
 module Game.Logic.Chest
   ( -- * Types
     Chest(..)

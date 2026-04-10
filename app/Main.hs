@@ -17,7 +17,7 @@ import Game.AI.Runtime
   )
 import qualified Game.Audio as Audio
 import qualified Game.Config as Config
-import Game.GameState
+import Game.Core
 import Game.Logic.Dungeon (defaultLevelConfig)
 import Game.Render
   ( drawGame, bossAttr, doorAttr, lockedDoorAttr, fogAttr, npcAttr

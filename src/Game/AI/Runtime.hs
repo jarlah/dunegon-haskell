@@ -49,7 +49,7 @@ import qualified Game.AI.Prompts as AIPrompts
 import qualified Game.AI.QuestGen as AIQuestGen
 import Game.AI.Types (AIRequest (..), AIResponse (..))
 import Game.Config (AIConfig (..), GameConfig (..))
-import Game.GameState
+import Game.Core
 import Game.Logic.Quest (Quest (..), qName)
 import Game.Types
   ( DungeonLevel (..), Monster (..), Room (..), Stats (..)

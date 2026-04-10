@@ -23,7 +23,7 @@ import qualified Data.Set as Set
 import Data.Set (Set)
 import Linear (V2(..))
 
-import Game.GameState
+import Game.Core
 import Game.Logic.Chest (Chest(..), ChestState(..))
 import qualified Game.Logic.Inventory as Inv
 import Game.Logic.Progression (xpForNextLevel)

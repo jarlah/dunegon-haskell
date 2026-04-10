@@ -8,7 +8,7 @@ module Game.UI.ModalsSpec (spec) where
 import Linear (V2 (..))
 import Test.Hspec
 
-import Game.GameState
+import Game.Core
   ( GameState (..), NPC (..), hardcodedInitialState )
 import Game.Logic.Quest
   ( Quest (..), QuestGoal (..), QuestStatus (..), mkQuest )

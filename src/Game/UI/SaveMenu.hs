@@ -29,7 +29,7 @@ import Brick (EventM, get, modify, put)
 import Control.Monad.IO.Class (liftIO)
 import qualified Graphics.Vty as V
 
-import Game.GameState
+import Game.Core
 import qualified Game.Save as Save
 import Game.Save.Types (SaveMetadata (..))
 import Game.UI.Types (Name, RuntimeFlags (..))

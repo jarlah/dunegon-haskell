@@ -14,7 +14,7 @@ import qualified Graphics.Vty as V
 
 import Game.AI.Runtime (AIRuntime)
 import qualified Game.Audio as Audio
-import Game.GameState
+import Game.Core
 import Game.Input (handleKey)
 import Game.Types (GameAction (..))
 import Game.UI.Modals (playEventsFor)

@@ -57,7 +57,7 @@ dirToOffset W  = V2 (-1) 0
 dirToOffset NW = V2 (-1) (-1)
 
 -- | Identifier for a key / lock pair. Allocated monotonically by the
---   dungeon generator (see @gsNextKeyId@ in "Game.GameState"), so no
+--   dungeon generator (see @gsNextKeyId@ in "Game.Core"), so no
 --   two locks in a single run ever share a 'KeyId'. Rendering code
 --   never pattern-matches on the integer — it goes through 'keyName'
 --   to get a stable human-readable name.

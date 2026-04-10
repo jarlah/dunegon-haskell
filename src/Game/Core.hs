@@ -1,4 +1,4 @@
-module Game.GameState
+module Game.Core
   ( GameState(..)
   , ParkedLevel(..)
   , NPC(..)
@@ -67,57 +67,23 @@ import Game.State.Types
   , DirectionalAction(..), emit
   )
 import Game.Utils.List (updateAt, removeAt)
-
--- | The fixed order of options on the launch screen. Kept as a
---   top-level list so the renderer and the key handler agree on
---   indices without having to duplicate the list.
-launchOptions :: [LaunchOption]
-launchOptions = [LaunchNewGame, LaunchContinue, LaunchLoad, LaunchQuit]
-
--- | How far a dash moves the player, in tiles, before stopping on
---   any obstacle (wall, closed/locked door, monster, NPC, item, or
---   stairs). Five is enough to break line of sight against most
---   regular monsters' 8-tile sight radius after two dashes, which
---   is the scenario the mechanic exists to support.
-dashMaxSteps :: Int
-dashMaxSteps = 5
-
--- | How many turns must pass after a dash before the player can
---   dash again. Ticks in 'processMonsters', which runs once per
---   turn-advancing action.
-dashCooldownTurns :: Int
-dashCooldownTurns = 60
-
--- | How many consecutive "safe" turns (no hostile monster visible
---   in the player's FOV) the player must accumulate before
---   regenerating 1 HP via 'tickRegen'. Twelve feels slow enough
---   that potions still matter in active combat but fast enough
---   that retreating behind a closed door actually pays off.
-regenInterval :: Int
-regenInterval = 12
-
--- | How far the player can see, in tiles. Measured in Euclidean
---   distance; 8 feels right for a 60×20 dungeon.
-fovRadius :: Int
-fovRadius = 8
-
--- | How far a monster can see, in tiles. Kept symmetric with
---   'fovRadius' so "if I can see it, it can see me" — Milestone 16
---   can retune if playtesting shows the player needs a scouting
---   advantage. Measured in Euclidean distance, matching the FOV.
-monsterSightRadius :: Int
-monsterSightRadius = 8
-
-defaultPlayerStats :: Stats
-defaultPlayerStats = Stats
-  { sHP      = 25
-  , sMaxHP   = 25
-  , sAttack  = 6
-  , sDefense = 2
-  , sSpeed   = 10
-  , sLevel   = 1
-  , sXP      = 0
-  }
+import Game.Logic.Constants
+  ( fovRadius, monsterSightRadius, regenInterval
+  , defaultPlayerStats, dashMaxSteps, dashCooldownTurns, launchOptions
+  )
+import Game.Logic.Lookup
+  ( monsterAt, npcAt, chestAt, replaceChestAt, findKeyIndex, takeFirstItemAt
+  )
+import Game.Logic.Spawning
+  ( spawnMonsters, spawnNPCs, randomRoomPos, mkOffer, acceptOffer
+  )
+import Game.Logic.Placement
+  ( spawnSideReachable, placeKeyLoot, placeChests, roomPositions, pickBossTopLeft
+  )
+import qualified Game.Logic.Door as Door
+import qualified Game.Logic.Wizard as Wiz
+import qualified Game.Logic.Tick as Tick
+import qualified Game.Logic.Scoring as Scoring
 
 -- | Construct a 'GameState' from the given parts.
 mkGameState :: StdGen -> DungeonLevel -> Pos -> [Monster] -> GameState
@@ -165,17 +131,6 @@ mkGameState gen dl start monsters = recomputeVisibility GameState
   , gsSavesUsed         = 0
   , gsFinalTurns        = Nothing
   }
-
--- | Build a quest as an un-accepted *offer*. Same as 'mkQuest' but
---   with status 'QuestNotStarted' so 'advanceQuest' will ignore it
---   until the player accepts — at which point the status flips to
---   'QuestActive' via 'acceptOffer'.
-mkOffer :: String -> QuestGoal -> Quest
-mkOffer name goal = (mkQuest name goal) { qStatus = QuestNotStarted }
-
--- | Flip an offered quest into an accepted one.
-acceptOffer :: Quest -> Quest
-acceptOffer q = q { qStatus = QuestActive }
 
 -- | Refresh 'gsVisible' from the player's current position and fold
 --   the new FOV into 'gsExplored'. Called once at the end of every
@@ -230,112 +185,6 @@ newGame gen0 cfg =
        , gsChests       = chests
        }
 
--- | 4-connected flood fill from the player spawn, treating walls
---   AND any locked door as impassable (but treating closed doors as
---   passable, since bump-to-open doesn't need a key). The result is
---   exactly the set of tiles a keyless player can reach from their
---   spawn tile. At most one locked door exists per level, so this is
---   equivalent to "reachable while the lock stays locked."
---
---   Used by 'placeKeyLoot' to guarantee a minted key is never placed
---   on the far side of its own lock (which would softlock the run).
-spawnSideReachable :: DungeonLevel -> Pos -> Set Pos
-spawnSideReachable dl start = go (Set.singleton start) [start]
-  where
-    passable p = case tileAt dl p of
-      Just Wall           -> False
-      Just (Door (Locked _)) -> False
-      Just _              -> True
-      Nothing             -> False
-
-    go visited []       = visited
-    go visited (p : qs) =
-      let neighbors =
-            [ p + V2 0 (-1)
-            , p + V2 0   1
-            , p + V2 1   0
-            , p + V2 (-1) 0
-            ]
-          fresh =
-            [ n
-            | n <- neighbors
-            , not (Set.member n visited)
-            , passable n
-            ]
-      in go (foldr Set.insert visited fresh) (qs ++ fresh)
-
--- | Place NPCs for a freshly generated level. For the M10.1 MVP
---   this only fires on depth 1 and drops a single "Quest Master"
---   NPC in a non-starting room carrying the two MVP quests.
-spawnNPCs :: StdGen -> Int -> [D.Room] -> ([NPC], StdGen)
-spawnNPCs gen depth rooms
-  | depth /= 1 = ([], gen)
-  | otherwise  = case drop 1 rooms of
-      []        -> ([], gen)                 -- degenerate: only one room
-      (r : _)   ->
-        let (p, gen') = randomRoomPos r gen
-            questMaster = NPC
-              { npcName     = "Quest Master"
-              , npcPos      = p
-              , npcGreeting = "Greetings, traveler. I have work for those willing."
-              , npcAIGreet  = Nothing
-              , npcOffers   =
-                  [ (mkOffer "Slayer"        (GoalKillMonsters 5)) { qReward = 50 }
-                  , (mkOffer "Delve"         (GoalReachDepth 3))   { qReward = 75 }
-                  , (mkOffer "Slay the Dragon" GoalKillBoss)       { qReward = 500 }
-                  ]
-              }
-        in ([questMaster], gen')
-
--- | Roll 0-2 monsters per candidate room and drop them in random
---   spots. The floor depth gates which monster kinds may appear:
---   depth 1 is a tutorial floor with only rats and goblins, so a
---   fresh player can find a sword and level up before meeting an
---   orc (see 'randomMonsterKind').
-spawnMonsters :: StdGen -> Int -> [D.Room] -> ([Monster], StdGen)
-spawnMonsters gen0 depth = foldl' step ([], gen0)
-  where
-    step (acc, gen) r =
-      let (count, g1) = randomR (0 :: Int, 2) gen
-          (ms,    g2) = spawnInRoom g1 depth r count
-      in (acc ++ ms, g2)
-
-spawnInRoom :: StdGen -> Int -> D.Room -> Int -> ([Monster], StdGen)
-spawnInRoom gen0 depth r n
-  | n <= 0    = ([], gen0)
-  | otherwise =
-      let (kind, g1) = randomMonsterKind depth gen0
-          (p,    g2) = randomRoomPos r g1
-          m          = mkMonster kind p
-          (rest, g3) = spawnInRoom g2 depth r (n - 1)
-      in (m : rest, g3)
-
--- | Pick a random non-boss monster kind. Depth 1 only rolls rats
---   and goblins so new players have a tutorial floor to find a
---   weapon and level up; depth 2+ opens the full roster (currently
---   rat/goblin/orc, uniform). Bosses are placed by 'spawnBoss', not
---   by this roll.
-randomMonsterKind :: Int -> StdGen -> (MonsterKind, StdGen)
-randomMonsterKind depth gen0
-  | depth <= 1 =
-      let (i, gen1) = randomR (0 :: Int, 1) gen0
-          k = case i of
-                0 -> Rat
-                _ -> Goblin
-      in (k, gen1)
-  | otherwise =
-      let (i, gen1) = randomR (0 :: Int, 2) gen0
-          k = case i of
-                0 -> Rat
-                1 -> Goblin
-                _ -> Orc
-      in (k, gen1)
-
-randomRoomPos :: D.Room -> StdGen -> (Pos, StdGen)
-randomRoomPos r gen0 =
-  let (px, g1) = randomR (D.rX r, D.rX r + D.rW r - 1) gen0
-      (py, g2) = randomR (D.rY r, D.rY r + D.rH r - 1) g1
-  in (V2 px py, g2)
 
 -- | A hardcoded 20x10 room (Milestone 1 fixture).
 hardcodedRoom :: DungeonLevel
@@ -383,12 +232,28 @@ applyCommand cmd gs =
         | isCheatCommand cmd = gs { gsCheatsUsed = True }
         | otherwise          = gs
   in recomputeVisibility $ case cmd of
-       CmdReveal       -> wizCmdReveal gsMarked
-       CmdHeal         -> wizCmdHeal gsMarked
-       CmdKillAll      -> wizCmdKillAll gsMarked
-       CmdTeleport p   -> wizCmdTeleport p gsMarked
-       CmdSpawn k      -> wizCmdSpawn k gsMarked
-       CmdXP n         -> wizCmdXP n gsMarked
+       CmdReveal ->
+         let explored' = Wiz.wizCmdReveal (gsLevel gsMarked) (gsExplored gsMarked)
+         in wizMsg "map revealed." gsMarked { gsExplored = explored' }
+       CmdHeal ->
+         wizMsg "fully healed." gsMarked { gsPlayerStats = Wiz.wizCmdHeal (gsPlayerStats gsMarked) }
+       CmdKillAll ->
+         let (n, ms') = Wiz.wizCmdKillAll (gsMonsters gsMarked)
+         in wizMsg (show n ++ " monster(s) banished.") gsMarked { gsMonsters = ms' }
+       CmdTeleport p -> case Wiz.wizCmdTeleport p (gsLevel gsMarked) of
+         Right pos -> wizMsg ("teleported to " ++ showPos p ++ ".") gsMarked { gsPlayerPos = pos }
+         Left  msg -> wizMsg msg gsMarked
+       CmdSpawn k -> case Wiz.wizCmdSpawn k (gsPlayerPos gsMarked) (gsLevel gsMarked) (gsMonsters gsMarked) of
+         Right ms' -> wizMsg ("spawned a " ++ monsterName k ++ ".") gsMarked { gsMonsters = ms' }
+         Left  msg -> wizMsg msg gsMarked
+       CmdXP n -> case Wiz.wizCmdXP n (gsPlayerStats gsMarked) of
+         Right (s', lvlMsgs, evs) ->
+           wizMsg ("granted " ++ show n ++ " XP.") gsMarked
+             { gsPlayerStats = s'
+             , gsMessages    = lvlMsgs ++ gsMessages gsMarked
+             , gsEvents      = gsEvents gsMarked ++ evs
+             }
+         Left msg -> wizMsg msg gsMarked
        CmdDescend      -> wizCmdDescend gsMarked
        CmdAscend       -> wizCmdAscend gsMarked
        -- Safe commands are dispatched inline by the prompt handler;
@@ -399,87 +264,12 @@ applyCommand cmd gs =
                   ("Internal: safe command routed to applyCommand")
                     : gsMessages gsMarked
               }
+  where
+    showPos (V2 x y) = "(" ++ show x ++ "," ++ show y ++ ")"
 
 -- | Prepend a wizard-flavored log line.
 wizMsg :: String -> GameState -> GameState
 wizMsg m gs = gs { gsMessages = ("Wizard: " ++ m) : gsMessages gs }
-
-wizCmdReveal :: GameState -> GameState
-wizCmdReveal gs =
-  let dl   = gsLevel gs
-      all_ = Set.fromList
-        [ V2 x y
-        | x <- [0 .. dlWidth  dl - 1]
-        , y <- [0 .. dlHeight dl - 1]
-        ]
-  in wizMsg "map revealed." gs { gsExplored = Set.union (gsExplored gs) all_ }
-
-wizCmdHeal :: GameState -> GameState
-wizCmdHeal gs =
-  let s  = gsPlayerStats gs
-      s' = s { sHP = sMaxHP s }
-  in wizMsg "fully healed." gs { gsPlayerStats = s' }
-
-wizCmdKillAll :: GameState -> GameState
-wizCmdKillAll gs =
-  let n = length (gsMonsters gs)
-  in wizMsg (show n ++ " monster(s) banished.") gs { gsMonsters = [] }
-
--- | Teleport if the target tile is walkable *and* in-bounds.
---   Refuses silently-with-message otherwise so the wizard doesn't
---   phase into a wall or off the edge of the map.
-wizCmdTeleport :: Pos -> GameState -> GameState
-wizCmdTeleport p gs =
-  case tileAt (gsLevel gs) p of
-    Just t | isWalkable t ->
-      wizMsg ("teleported to " ++ showPos p ++ ".") gs { gsPlayerPos = p }
-    Just _ ->
-      wizMsg ("tile at " ++ showPos p ++ " is blocked.") gs
-    Nothing ->
-      wizMsg (showPos p ++ " is outside the map.") gs
-  where
-    showPos (V2 x y) = "(" ++ show x ++ "," ++ show y ++ ")"
-
--- | Spawn a monster on the first walkable tile adjacent to the
---   player that isn't already occupied. If the player is somehow
---   boxed in, bail out with a message rather than overwriting
---   something.
-wizCmdSpawn :: MonsterKind -> GameState -> GameState
-wizCmdSpawn kind gs =
-  let neighbors =
-        [ gsPlayerPos gs + dirToOffset d | d <- [minBound .. maxBound] ]
-      occupied = Set.fromList (map mPos (gsMonsters gs))
-      free =
-        [ p
-        | p <- neighbors
-        , case tileAt (gsLevel gs) p of
-            Just t  -> isWalkable t
-            Nothing -> False
-        , not (Set.member p occupied)
-        ]
-  in case free of
-       []      -> wizMsg "no room to spawn next to you." gs
-       (p : _) ->
-         wizMsg ("spawned a " ++ monsterName kind ++ ".") gs
-           { gsMonsters = gsMonsters gs ++ [mkMonster kind p] }
-
--- | Grant XP and surface the same level-up messages a kill would.
-wizCmdXP :: Int -> GameState -> GameState
-wizCmdXP n gs
-  | n < 0 = wizMsg "XP must be non-negative." gs
-  | otherwise =
-      let (s', ups) = P.gainXP (gsPlayerStats gs) n
-          startLvl  = sLevel (gsPlayerStats gs)
-          endLvl    = sLevel s'
-          lvlMsgs   =
-            [ "You reach level " ++ show l ++ "!"
-            | l <- [endLvl, endLvl - 1 .. startLvl + 1]
-            ]
-      in wizMsg ("granted " ++ show n ++ " XP.") gs
-           { gsPlayerStats = s'
-           , gsMessages    = lvlMsgs ++ gsMessages gs
-           , gsEvents      = gsEvents gs ++ replicate ups EvLevelUp
-           }
 
 -- | Force-descend. Unlike 'playerDescend' this does not require
 --   standing on a 'StairsDown' tile — it's meant for poking at
@@ -565,7 +355,7 @@ applyAction act gs0 =
                     -- turn (just like bumping a wall), but the turn
                     -- *does* advance so monsters react.
                     Just (Door Closed) ->
-                      let gs' = openDoorAt target gs
+                      let gs' = gs { gsLevel = Door.openDoorAt target (gsLevel gs) }
                           msg = "You open the door."
                       in processMonsters
                            (gs' { gsMessages = msg : gsMessages gs' })
@@ -579,7 +369,7 @@ applyAction act gs0 =
                       case findKeyIndex kid (gsInventory gs) of
                         Just ki ->
                           let inv' = Inv.dropItem ki (gsInventory gs)
-                              gs'  = openDoorAt target gs
+                              gs'  = gs { gsLevel = Door.openDoorAt target (gsLevel gs) }
                               nm   = keyName kid
                               msg  = "You unlock the door with the "
                                   ++ nm ++ "."
@@ -595,60 +385,7 @@ applyAction act gs0 =
                         Just newPos -> processMonsters (gs { gsPlayerPos = newPos })
                         Nothing     -> gs  -- blocked; turn does not advance
 
--- | Find a monster occupying the given tile, if any. Uses
---   'monsterOccupies' so that multi-tile bosses resolve on any
---   tile of their footprint — attacks and collisions that hit any
---   tile of a dragon all point back at the same 'Monster' entry.
-monsterAt :: Pos -> [Monster] -> Maybe (Int, Monster)
-monsterAt p = go 0
-  where
-    go _ [] = Nothing
-    go i (m : rest)
-      | monsterOccupies m p = Just (i, m)
-      | otherwise           = go (i + 1) rest
 
--- | Index of the first 'IKey' in the player's bag whose 'KeyId'
---   matches the given lock, or 'Nothing' if no matching key is
---   present. Used by the bump-to-unlock path to consume the key
---   from the same position it was picked up from.
-findKeyIndex :: KeyId -> Inventory -> Maybe Int
-findKeyIndex kid inv = go 0 (invItems inv)
-  where
-    go _ []                       = Nothing
-    go i (IKey k : rest) | k == kid = Just i
-                         | otherwise = go (i + 1) rest
-    go i (_      : rest)            = go (i + 1) rest
-
--- | Rewrite the tile at 'p' to @Door Open@. Used by the bump-to-open
---   path in 'applyAction' so a closed door becomes walkable on the
---   same turn the player tried to step onto it. Out-of-bounds
---   positions are a no-op (the caller only invokes this after
---   'tileAt' has already confirmed the tile is @Door Closed@).
-openDoorAt :: Pos -> GameState -> GameState
-openDoorAt (V2 x y) gs =
-  let lvl = gsLevel gs
-      w   = dlWidth  lvl
-      h   = dlHeight lvl
-  in if x < 0 || y < 0 || x >= w || y >= h
-       then gs
-       else let idx      = y * w + x
-                newTiles = dlTiles lvl V.// [(idx, Door Open)]
-            in gs { gsLevel = lvl { dlTiles = newTiles } }
-
--- | Rewrite the tile at 'p' to @Door Closed@. Mirrors 'openDoorAt'
---   and is used by 'playerCloseDoor'. The caller is responsible
---   for confirming the tile is currently @Door Open@ and that
---   nothing stands on it.
-closeDoorAt :: Pos -> GameState -> GameState
-closeDoorAt (V2 x y) gs =
-  let lvl = gsLevel gs
-      w   = dlWidth  lvl
-      h   = dlHeight lvl
-  in if x < 0 || y < 0 || x >= w || y >= h
-       then gs
-       else let idx      = y * w + x
-                newTiles = dlTiles lvl V.// [(idx, Door Closed)]
-            in gs { gsLevel = lvl { dlTiles = newTiles } }
 
 -- | Attempt to close the door one step in the given direction. On
 --   success, stamp 'Door Closed', push a confirmation message, and
@@ -677,7 +414,7 @@ playerCloseDoor dir gs =
              -- defensive anyway.
              pushMsg "You can't close a door you're standing on." gs
          | otherwise ->
-             let gs' = closeDoorAt target gs
+             let gs' = gs { gsLevel = Door.closeDoorAt target (gsLevel gs) }
              in processMonsters (pushMsg "You close the door." gs')
        Just (Door Closed) ->
          pushMsg "That door is already closed." gs
@@ -710,7 +447,8 @@ playerDash dir gs
              : gsMessages gs
          }
   | otherwise =
-      let steps  = dashSteps gs dir dashMaxSteps
+      let steps  = Door.dashSteps (gsLevel gs) (gsMonsters gs) (gsNPCs gs)
+                      (gsItemsOnFloor gs) (gsPlayerPos gs) dir dashMaxSteps
           nTaken = length steps
       in if nTaken == 0
            then gs { gsMessages = "You can't dash that way." : gsMessages gs }
@@ -725,70 +463,7 @@ playerDash dir gs
                    }
              in processMonsters gs'
 
--- | Accumulate up to @n@ successive positions in direction @dir@
---   starting from the player's current position. Stops as soon as
---   the next step would land on anything other than plain floor or
---   an open door, anything occupied by a monster / NPC, or anything
---   with a floor item on it. Returns the list of /positions stepped
---   onto/ (empty list = blocked at step 1).
-dashSteps :: GameState -> Dir -> Int -> [Pos]
-dashSteps gs dir n = go n (gsPlayerPos gs)
-  where
-    dl       = gsLevel gs
-    monsters = gsMonsters gs
-    npcs     = gsNPCs gs
-    items    = gsItemsOnFloor gs
-    offset   = dirToOffset dir
 
-    go 0 _ = []
-    go k p =
-      let next = p + offset
-      in if not (dashPassable next)
-           then []
-           else next : go (k - 1) next
-
-    dashPassable p =
-      case tileAt dl p of
-        Just Floor       -> clearOfActors p
-        Just (Door Open) -> clearOfActors p
-        _                -> False
-
-    clearOfActors p =
-         case monsterAt p monsters of { Just _ -> False; Nothing -> True }
-      && case npcAt     p npcs      of { Just _ -> False; Nothing -> True }
-      && not (any ((== p) . fst) items)
-
--- | Index lookup mirroring 'monsterAt' but for NPCs.
-npcAt :: Pos -> [NPC] -> Maybe (Int, NPC)
-npcAt p = go 0
-  where
-    go _ [] = Nothing
-    go i (n : rest)
-      | npcPos n == p = Just (i, n)
-      | otherwise     = go (i + 1) rest
-
--- | Index lookup mirroring 'monsterAt' but for chests. Returns the
---   first chest whose 'chestPos' matches, along with its position
---   in 'gsChests'. Used by the bump-to-open path in 'applyAction'.
-chestAt :: Pos -> [Chest] -> Maybe (Int, Chest)
-chestAt p = go 0
-  where
-    go _ [] = Nothing
-    go i (c : rest)
-      | chestPos c == p = Just (i, c)
-      | otherwise       = go (i + 1) rest
-
--- | Replace the chest at index @i@ with @c'@, leaving the rest of
---   the list untouched. Total over in-range indices; out-of-range
---   indices pass the list through unchanged (defensive — callers
---   use 'chestAt' to find the index in the first place).
-replaceChestAt :: Int -> Chest -> [Chest] -> [Chest]
-replaceChestAt i c' = go 0
-  where
-    go _ []       = []
-    go j (c : cs)
-      | j == i    = c' : cs
-      | otherwise = c  : go (j + 1) cs
 
 -- | Bump-to-open chest interaction. Mirrors 'playerPickup'/the
 --   bump-to-open door flow:
@@ -946,12 +621,31 @@ turnInQuest npcIdx readyIdx gs =
       | n < 0 || n >= length xs = Nothing
       | otherwise               = Just (xs !! n)
 
+-- | Wire a 'C.HitOutcome' back into the game state.
+applyHitOutcome :: C.HitOutcome -> GameState -> GameState
+applyHitOutcome ho gs = emit
+  gs { gsMonsters     = C.hoMonsters ho
+     , gsPlayerStats  = C.hoPlayerStats ho
+     , gsRng          = C.hoRng ho
+     , gsMessages     = C.hoMessages ho
+     , gsItemsOnFloor = C.hoItemsOnFloor ho
+     , gsVictory      = C.hoVictory ho
+     , gsFinalTurns   = C.hoFinalTurns ho
+     , gsQuests       = C.hoQuests ho
+     }
+  (C.hoEvents ho)
+
 playerAttack :: GameState -> Int -> Monster -> GameState
 playerAttack gs i m =
   let playerCombat   = Inv.effectiveStats (gsPlayerStats gs) (gsInventory gs)
       (result, gen') = C.resolveAttack (gsRng gs) playerCombat (mStats m)
       msg            = C.describeAttack result (monsterName (mKind m))
-  in C.applyHitResult gs { gsRng = gen' } i m result [msg]
+      ho             = C.applyHitResult i m result [msg]
+                         (gsMonsters gs) (gsPlayerStats gs) gen'
+                         (gsItemsOnFloor gs) (gsMessages gs)
+                         (gsVictory gs) (gsFinalTurns gs) (gsTurnsElapsed gs)
+                         (gsQuests gs)
+  in applyHitOutcome ho gs
 
 -- | Ranged attack: fire one arrow in the given direction. The
 --   caller in 'applyAction' uses the arrow-count delta to decide
@@ -985,8 +679,13 @@ fireArrow dir gs =
         Ranged.ShotMissed msg ->
           pushMsg msg (decArrow gs)
         Ranged.ShotLanded i m result msg gen' ->
-          let gs' = (decArrow gs) { gsRng = gen' }
-          in C.applyHitResult gs' i m result [msg]
+          let gs' = decArrow gs
+              ho  = C.applyHitResult i m result [msg]
+                      (gsMonsters gs') (gsPlayerStats gs') gen'
+                      (gsItemsOnFloor gs') (gsMessages gs')
+                      (gsVictory gs') (gsFinalTurns gs') (gsTurnsElapsed gs')
+                      (gsQuests gs')
+          in applyHitOutcome ho gs'
   where
     pushMsg m s = s { gsMessages = m : gsMessages s }
     decArrow s  =
@@ -1030,15 +729,6 @@ playerPickup gs =
              , gsMessages     = ("You pick up the " ++ itemName item ++ ".") : gsMessages gs
              }
 
--- | Find and remove the first item at @p@ from the floor list,
---   preserving the order of the rest.
-takeFirstItemAt :: Pos -> [(Pos, Item)] -> Maybe (Item, [(Pos, Item)])
-takeFirstItemAt p = go []
-  where
-    go _    []                        = Nothing
-    go seen ((q, it) : rest)
-      | q == p    = Just (it, reverse seen ++ rest)
-      | otherwise = go ((q, it) : seen) rest
 
 -- | Apply the default action to the item at @idx@ in the bag.
 --   Potions are quaffed (and consumed); weapons and armor are
@@ -1247,111 +937,6 @@ generateAndEnter depth gs =
 --   that the player can reach from spawn /without/ opening any
 --   locked door — i.e. a room whose tiles intersect the
 --   'spawnSideReachable' set for this level. Prefers non-spawn
---   rooms (so the player doesn't trip over the key on the same step
---   they enter the floor) and falls back to the spawn room if no
---   non-spawn room is on the spawn side. Each key becomes one
---   @(Pos, IKey kid)@ entry suitable for 'gsItemsOnFloor'.
---
---   The reachability filter is what prevents a softlock where the
---   lock sits between spawn and the key itself.
-placeKeyLoot
-  :: StdGen
-  -> Set Pos
-  -> [D.Room]
-  -> [KeyId]
-  -> ([(Pos, Item)], StdGen)
-placeKeyLoot gen0 reachable rooms keys =
-  let -- Tiles of a room that are actually reachable (pre-filtered).
-      roomReachableTiles r =
-        [ p | p <- roomPositions r, Set.member p reachable ]
-
-      -- Rooms that still have at least one reachable tile.
-      reachableRooms = filter (not . null . roomReachableTiles) rooms
-
-      -- Prefer non-spawn rooms (index >= 1). If none of those are
-      -- reachable (pathological: the locked door seals off
-      -- everything past the spawn room), fall back to the spawn
-      -- room alone. If nothing is reachable at all, the key is
-      -- silently dropped — at that point the level is broken in
-      -- ways unrelated to locked doors.
-      preferredRooms =
-        let nonSpawn = filter (not . null . roomReachableTiles) (drop 1 rooms)
-        in if null nonSpawn
-             then case rooms of
-                    (r : _) | not (null (roomReachableTiles r)) -> [r]
-                    _                                            -> []
-             else nonSpawn
-
-      pool
-        | not (null preferredRooms) = preferredRooms
-        | otherwise                 = reachableRooms
-
-      go g [] = ([], g)
-      go g (k : ks) = case pool of
-        [] -> go g ks  -- nothing reachable: drop the key
-        _  ->
-          let (ri, g1)    = randomR (0, length pool - 1) g
-              room        = pool !! ri
-              tiles       = roomReachableTiles room
-              (ti, g2)    = randomR (0, length tiles - 1) g1
-              pos         = tiles !! ti
-              (rest, g3)  = go g2 ks
-          in ((pos, IKey k) : rest, g3)
-  in go gen0 keys
-
--- | Place up to @n@ full chests in the given candidate rooms,
---   avoiding any tile already occupied by a monster (per footprint),
---   item, NPC, another chest, or terrain that isn't a plain floor
---   (stairs, doors, walls). Each chest is seeded with a freshly
---   rolled item from 'Chest.rollChestLoot', so newly generated
---   floors show a full chest until the player bumps it.
---
---   The RNG is threaded through the picks and the loot rolls so
---   the placement is save/load-deterministic. Returns as many
---   chests as could be placed — if every candidate tile is
---   occupied, fewer than @n@ (possibly zero) chests are returned.
-placeChests
-  :: StdGen
-  -> DungeonLevel
-  -> [D.Room]
-  -> [Pos]
-  -> Int
-  -> ([Chest], StdGen)
-placeChests gen0 dl rooms occupied n
-  | n <= 0 || null rooms = ([], gen0)
-  | otherwise =
-      let candidates =
-            [ p
-            | r <- rooms
-            , p <- roomPositions r
-            , case tileAt dl p of
-                Just Floor -> True
-                _          -> False
-            , p `notElem` occupied
-            ]
-      in pick gen0 candidates n
-  where
-    pick g _    0 = ([], g)
-    pick g []   _ = ([], g)
-    pick g cs   k =
-      let (i, g1)     = randomR (0, length cs - 1) g
-          pos         = cs !! i
-          rest        = take i cs ++ drop (i + 1) cs
-          (item, g2)  = Chest.rollChestLoot g1
-          chest       = Chest { chestPos = pos, chestState = ChestFull item }
-          (more, g3)  = pick g2 rest (k - 1)
-      in (chest : more, g3)
-
--- | Every @(x, y)@ floor tile inside a room's rectangle. Rooms are
---   carved as solid floor, so every position here is guaranteed to
---   be a walkable tile in the generated level.
-roomPositions :: D.Room -> [Pos]
-roomPositions r =
-  [ V2 x y
-  | x <- [D.rX r .. D.rX r + D.rW r - 1]
-  , y <- [D.rY r .. D.rY r + D.rH r - 1]
-  ]
-
 -- | Should the boss music track be playing right now? True iff the
 --   player is currently standing on the boss floor /and/ has
 --   explored at least one tile of the boss room — i.e. they've
@@ -1369,18 +954,6 @@ shouldPlayBossMusic gs = case gsBossRoom gs of
           , y <- [D.rY room .. D.rY room + D.rH room - 1]
           ]
     in any (`Set.member` gsExplored gs) tiles
-
--- | Pick a random top-left position inside a room such that a 2x2
---   footprint fits entirely within the room's interior. For a room
---   with width or height of exactly 1 (shouldn't happen given
---   'lcRoomMin' = 4) this degenerates to the top-left corner.
-pickBossTopLeft :: D.Room -> StdGen -> (Pos, StdGen)
-pickBossTopLeft r gen0 =
-  let xMax    = D.rX r + max 0 (D.rW r - 2)
-      yMax    = D.rY r + max 0 (D.rH r - 2)
-      (x, g1) = randomR (D.rX r, xMax) gen0
-      (y, g2) = randomR (D.rY r, yMax) g1
-  in (V2 x y, g2)
 
 -- | Descend one floor. Fails with a flavor message if the player
 --   is not standing on 'StairsDown'. If the next floor has been
@@ -1453,72 +1026,22 @@ playerAscend gs =
 tickPlayerTurn :: GameState -> GameState
 tickPlayerTurn = tickRegen . tickDash . tickTurnCounter . tickChests
 
--- | Per-turn chest decay. Walks 'gsChests' and advances every
---   'ChestEmpty' counter one step closer to refilling; 'ChestFull'
---   chests are untouched. Parked floors do NOT receive this tick —
---   'loadParked' instead performs a single bulk refill check on
---   re-entry, which is equivalent to having ticked while away and
---   rolling new loot on arrival.
 tickChests :: GameState -> GameState
 tickChests gs = gs { gsChests = map Chest.tickChest (gsChests gs) }
 
--- | Isolated dash-cooldown tick. Split out of 'tickPlayerTurn' so
---   the regen composition stays readable and so tests can cover
---   each rule in isolation.
 tickDash :: GameState -> GameState
-tickDash gs
-  | gsDashCooldown gs > 0 = gs { gsDashCooldown = gsDashCooldown gs - 1 }
-  | otherwise             = gs
+tickDash gs = gs { gsDashCooldown = Tick.tickDash (gsDashCooldown gs) }
 
--- | Passive HP regen: while no hostile monster sits in the
---   player's current FOV, accumulate one "safe turn" per call; on
---   hitting 'regenInterval' add 1 HP (capped at 'sMaxHP') and
---   reset. A hostile becoming visible — or the counter being
---   ticked while a hostile is already visible — immediately
---   resets the counter so the player has to fully disengage
---   before sustain starts again.
---
---   Early-outs:
---     * full HP → no-op (don't burn the counter toward nothing)
---     * dead or victorious → no-op (no further gameplay)
---
---   Hostility is currently a coarse proxy: every 'Monster' on the
---   level is treated as hostile. NPCs live on a separate list
---   (see 'gsNPCs') so they never reach this check.
 tickRegen :: GameState -> GameState
-tickRegen gs
-  | gsDead gs                              = gs
-  | gsVictory gs                           = gs
-  | sHP (gsPlayerStats gs) >= sMaxHP (gsPlayerStats gs) =
-      gs { gsRegenCounter = 0 }
-  | hostileVisible                         = gs { gsRegenCounter = 0 }
-  | otherwise                              =
-      let next = gsRegenCounter gs + 1
-      in if next >= regenInterval
-           then gs { gsRegenCounter = 0
-                   , gsPlayerStats  =
-                       let s = gsPlayerStats gs
-                       in s { sHP = min (sMaxHP s) (sHP s + 1) }
-                   }
-           else gs { gsRegenCounter = next }
-  where
-    vis             = gsVisible gs
-    hostileVisible  = any (\m -> any (`Set.member` vis) (monsterTiles m))
-                          (gsMonsters gs)
+tickRegen gs =
+  let (stats', counter') = Tick.tickRegen
+        (gsDead gs) (gsVictory gs) (gsPlayerStats gs)
+        (gsRegenCounter gs) (gsVisible gs) (gsMonsters gs)
+  in gs { gsPlayerStats = stats', gsRegenCounter = counter' }
 
--- | Run-stats clock. Every call advances 'gsTurnsElapsed' by one,
---   unless the run has already ended (death or victory): once
---   'gsFinalTurns' is 'Just', the counter is frozen at its
---   snapshot so the victory modal and HUD keep showing the same
---   number. A dead player's counter also stops — there's no
---   further gameplay, and a permanently-ticking "time of death"
---   number would look strange on the end screen.
 tickTurnCounter :: GameState -> GameState
-tickTurnCounter gs
-  | gsDead gs                       = gs
-  | Just _ <- gsFinalTurns gs       = gs
-  | otherwise =
-      gs { gsTurnsElapsed = gsTurnsElapsed gs + 1 }
+tickTurnCounter gs =
+  gs { gsTurnsElapsed = Tick.tickTurnCounter (gsDead gs) (gsFinalTurns gs) (gsTurnsElapsed gs) }
 
 -- | Compute a textual "rank" label for a finished run, based on
 --   the three gamified counters: how many turns the boss kill
@@ -1535,20 +1058,8 @@ tickTurnCounter gs
 --     * /Legendary/ — genuine speedrun: ≤ 1500 turns, ≤ 3
 --       potions, 0 saves. Hard to hit by accident.
 --     * /Heroic/ — disciplined run: ≤ 2500 turns, ≤ 6 potions,
---       ≤ 2 saves. The "most players who finish" bucket.
---     * /Victor/ — you finished. Shown on any victory that
---       doesn't clear the looser bar.
---
---   Ranges are exclusive of the lower tier by construction — a
---   run that qualifies for Legendary trivially qualifies for
---   Heroic / Victor, and we pick the strictest matching label.
 runRank :: GameState -> String
-runRank gs = case gsFinalTurns gs of
-  Nothing -> if gsDead gs then "Fallen" else "In Progress"
-  Just t
-    | t <= 1500 && gsPotionsUsed gs <= 3 && gsSavesUsed gs == 0 -> "Legendary"
-    | t <= 2500 && gsPotionsUsed gs <= 6 && gsSavesUsed gs <= 2 -> "Heroic"
-    | otherwise                                                 -> "Victor"
+runRank gs = Scoring.runRank (gsFinalTurns gs) (gsDead gs) (gsPotionsUsed gs) (gsSavesUsed gs)
 
 processMonsters :: GameState -> GameState
 processMonsters gs0 = go (tickPlayerTurn gs0) 0

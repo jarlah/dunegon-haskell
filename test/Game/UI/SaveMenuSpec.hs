@@ -13,7 +13,7 @@ import Game.UI.SaveMenu
   ( buildSaveMenuEntries, entrySlot, filterLoadable
   , numberedSlotCount, showSaveError
   )
-import Game.GameState (SaveMenuEntry (..))
+import Game.Core (SaveMenuEntry (..))
 import Game.UI.Types (RuntimeFlags (..))
 
 -- | Build a 'SaveMetadata' fixture for a given slot. The scalar

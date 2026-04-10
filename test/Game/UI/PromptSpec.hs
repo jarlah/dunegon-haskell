@@ -15,7 +15,7 @@ import Game.UI.Prompt
   , routeCommand, stepPromptBuffer
   )
 import Game.UI.Types (RuntimeFlags (..))
-import Game.GameState (SaveMenuMode (..))
+import Game.Core (SaveMenuMode (..))
 import Linear (V2 (..))
 
 wizard, clean :: RuntimeFlags

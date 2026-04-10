@@ -3,7 +3,7 @@
 --
 --   Right now this module has a single responsibility: produce a
 --   one-to-two sentence in-character greeting for an NPC the player
---   is about to talk to. The hardcoded 'Game.GameState.npcGreeting'
+--   is about to talk to. The hardcoded 'Game.Core.npcGreeting'
 --   field is the fallback; a successful LLM call overrides it for
 --   the duration of the dialogue (and, once the async path lands,
 --   gets cached on the NPC itself so re-opening the dialogue doesn't
@@ -31,7 +31,7 @@ import           Game.Config        (AIConfig)
 
 -- | Ask the LLM for a greeting for the given NPC. Returns 'Nothing'
 --   on any failure — the caller falls back to the hardcoded
---   'Game.GameState.npcGreeting'.
+--   'Game.Core.npcGreeting'.
 --
 --   The NPC role is free-form text ("Quest Master", "Merchant",
 --   "Hermit", ...) — whatever the call site wants the model to

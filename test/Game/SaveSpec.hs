@@ -20,7 +20,7 @@ import           System.Environment      (lookupEnv, setEnv, unsetEnv)
 import           System.IO.Temp          (withSystemTempDirectory)
 import           Test.Hspec
 
-import           Game.GameState          (GameState(..), hardcodedInitialState)
+import           Game.Core          (GameState(..), hardcodedInitialState)
 import           Game.Save
 
 spec :: Spec

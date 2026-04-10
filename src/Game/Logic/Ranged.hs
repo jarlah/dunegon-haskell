@@ -1,7 +1,7 @@
 -- | Pure helpers for ranged attacks. Everything here is either a
 --   data description or a pure transform — there is no 'GameState'
 --   anywhere. The glue that wires this module into the player-turn
---   pipeline lives in "Game.GameState" as 'Game.GameState.fireArrow';
+--   pipeline lives in "Game.Core" as 'Game.Core.fireArrow';
 --   that adapter builds the predicates 'resolveShot' needs out of
 --   the live 'GameState' and interprets the 'ShotOutcome' we return
 --   (decrementing the quiver, advancing the RNG, and handing
@@ -21,7 +21,7 @@
 --
 --   Keeping this module free of 'GameState' lets us unit test
 --   shots against hand-built fixtures and stops the import graph
---   from cycling back through "Game.GameState".
+--   from cycling back through "Game.Core".
 module Game.Logic.Ranged
   ( arrowRange
   , RayOutcome (..)
@@ -57,7 +57,7 @@ data RayOutcome
 
 -- | Description of what firing one arrow /would/ do, given a
 --   fixed snapshot of the world. 'resolveShot' returns one of
---   these and the caller in "Game.GameState" interprets it — this
+--   these and the caller in "Game.Core" interprets it — this
 --   module never touches 'GameState' directly.
 --
 --   Exactly three things can happen to a shot:
@@ -102,7 +102,7 @@ data ShotOutcome
 --   apply damage — all of that is the caller's job. Returning a
 --   'ShotOutcome' instead of a new 'GameState' is what keeps this
 --   module testable against hand-built fixtures and free of any
---   import back into "Game.GameState".
+--   import back into "Game.Core".
 --
 --   Resolution rules:
 --

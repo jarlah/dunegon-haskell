@@ -16,7 +16,7 @@
 --   * **Wizard / cheat commands** — hacks that modify the world
 --     directly (reveal map, heal, spawn monsters, teleport, ...).
 --     Only allowed when the game was launched with @--wizard@.
---     Dispatched through 'Game.GameState.applyCommand', which also
+--     Dispatched through 'Game.Core.applyCommand', which also
 --     stamps 'gsCheatsUsed' the moment any of them runs so the
 --     save file can be flagged as a wizard-touched run.
 module Game.Logic.Command
@@ -34,7 +34,7 @@ import Game.Types (MonsterKind(..), Pos)
 -- | A parsed prompt command. Adding a new command is a matter of
 --   adding a constructor here, a parser case in 'parseCommand',
 --   and a dispatch arm in either 'handlePromptKey' (safe commands
---   that need IO / modal state) or 'Game.GameState.applyCommand'
+--   that need IO / modal state) or 'Game.Core.applyCommand'
 --   (pure wizard commands).
 data Command
   -- Safe UI commands — always available.
@@ -78,7 +78,7 @@ data Command
 -- | 'True' if the command is a wizard / cheat helper that modifies
 --   the game world directly. Used by the prompt dispatch to reject
 --   these commands unless the player launched the game with
---   @--wizard@, and by 'Game.GameState.applyCommand' to stamp
+--   @--wizard@, and by 'Game.Core.applyCommand' to stamp
 --   'gsCheatsUsed' on the save.
 isCheatCommand :: Command -> Bool
 isCheatCommand cmd = case cmd of

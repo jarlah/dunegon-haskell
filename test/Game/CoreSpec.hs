@@ -3,7 +3,7 @@
 --
 --   These are deterministic: we construct tiny fixture 'GameState's
 --   with hand-picked RNG + stats so the combat outcome is forced.
-module Game.GameStateSpec (spec) where
+module Game.CoreSpec (spec) where
 
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -11,7 +11,7 @@ import Linear (V2(..))
 import System.Random (mkStdGen)
 import Test.Hspec
 
-import Game.GameState
+import Game.Core
 import Game.Logic.Chest
   ( Chest(..), ChestState(..), chestRespawnTurns )
 import Game.Logic.Command (Command(..))
@@ -98,7 +98,7 @@ ratAt :: Pos -> Monster
 ratAt = mkMonster Rat
 
 spec :: Spec
-spec = describe "Game.GameState.applyAction / event emission" $ do
+spec = describe "Game.Core.applyAction / event emission" $ do
 
   it "a blocked move produces no events and clears any stale ones" $ do
     -- Player at (1,1); walking N would hit the wall at (1,0).
@@ -1049,7 +1049,7 @@ spec = describe "Game.GameState.applyAction / event emission" $ do
   -- shared 'applyHitResult' regression guard for ranged boss kills.
   -- ----------------------------------------------------------------
 
-  describe "fireArrow (Game.GameState)" $ do
+  describe "fireArrow (Game.Core)" $ do
 
     it "does nothing and leaves arrows untouched when no bow is equipped" $ do
       let gs0 = (mkFixture 1 (V2 2 2) overpoweredPlayer [ratAt (V2 2 1)])

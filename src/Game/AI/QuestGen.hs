@@ -30,7 +30,7 @@ import           Game.Logic.Quest       (Quest (..), QuestGoal (..), QuestStatus
 
 -- | Fire a quest request at the LLM backend and parse the reply
 --   into a 'Quest'. Returns 'Nothing' on any failure — the caller
---   (NPC placement path in 'Game.GameState.spawnNPCs' or the
+--   (NPC placement path in 'Game.Core.spawnNPCs' or the
 --   dialogue opener) falls back to the hardcoded offer list.
 generateQuest
   :: AIClient

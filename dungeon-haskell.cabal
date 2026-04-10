@@ -32,7 +32,7 @@ library
   hs-source-dirs:      src
   exposed-modules:
     Game.Types
-    Game.GameState
+    Game.Core
     Game.State.Types
     Game.Logic.Movement
     Game.Logic.Dungeon
@@ -46,6 +46,14 @@ library
     Game.Logic.Chest
     Game.Logic.Ranged
     Game.Logic.Quest
+    Game.Logic.Constants
+    Game.Logic.Lookup
+    Game.Logic.Spawning
+    Game.Logic.Placement
+    Game.Logic.Door
+    Game.Logic.Wizard
+    Game.Logic.Tick
+    Game.Logic.Scoring
     Game.Render
     Game.UI.Types
     Game.UI.SaveMenu
@@ -128,7 +136,7 @@ test-suite dungeon-haskell-test
     Game.Logic.RangedSpec
     Game.Logic.QuestSpec
     Game.Logic.MonsterAISpec
-    Game.GameStateSpec
+    Game.CoreSpec
     Game.SaveSpec
     Game.UI.TypesSpec
     Game.UI.SaveMenuSpec

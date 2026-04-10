@@ -6,7 +6,7 @@ module Game.UI.LaunchSpec (spec) where
 
 import Test.Hspec
 
-import Game.GameState
+import Game.Core
   ( LaunchMenu (..), LaunchOption (..), launchOptions )
 import Game.UI.Launch (resolveLaunchOption, stepLaunchCursor)
 
