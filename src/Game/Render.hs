@@ -32,6 +32,13 @@ import Game.Logic.Quest
 import Game.Save.Types (SaveMetadata(..))
 import Game.Types
 
+-- | Centered bordered modal with a one-tile pad. The first argument
+--   wraps the bordered panel before centering (use 'id' for no
+--   extra constraint, or e.g. @hLimit 60@ for a narrow panel).
+modalFrame :: (Widget Name -> Widget Name) -> String -> Widget Name -> Widget Name
+modalFrame wrap title body =
+  centerLayer $ wrap $ borderWithLabel (str (" " ++ title ++ " ")) $ padAll 1 body
+
 -- | Brick widget-name type for this app.
 --
 --   Brick identifies stateful widgets (viewports, editors, lists,
@@ -345,7 +352,7 @@ drawInventoryModal gs =
         , "[letter] use/equip   Esc close"
         ]
       body = vBox $ map str (header ++ bagLines ++ footer)
-  in centerLayer $ borderWithLabel (str " Inventory ") $ padAll 1 body
+  in modalFrame id "Inventory" body
 
 -- | Centered modal showing an NPC's greeting, any quests the
 --   player is ready to turn in here, and the list of quests this
@@ -392,8 +399,7 @@ drawDialogueModal quests npcIdx npc =
         , "[A-Z] hand in  [a-z] accept  Esc close"
         ]
       body = vBox $ map str (header ++ readySection ++ offerSection ++ footer)
-      label = " " ++ npcName npc ++ " "
-  in centerLayer $ borderWithLabel (str label) $ padAll 1 body
+  in modalFrame id (npcName npc) body
   where
     rewardNote q
       | qGiver q == Just npcIdx =
@@ -444,7 +450,7 @@ drawQuestLogModal gs =
         ++ [ "[letter] select   x abandon selected   Esc close" ]
 
       body = vBox (map str lines_)
-  in centerLayer $ borderWithLabel (str " Quest Log ") $ padAll 1 body
+  in modalFrame id "Quest Log" body
 
 -- | Small floating panel for the AI-generated room description.
 --   Positioned with 'centerLayer' like every other modal in the
@@ -455,10 +461,7 @@ drawQuestLogModal gs =
 --   shadow any other modal's Esc handling.
 drawRoomDescPanel :: String -> Widget Name
 drawRoomDescPanel desc =
-  centerLayer
-    $ hLimit 60
-    $ borderWithLabel (str " Room ")
-    $ padAll 1
+  modalFrame (hLimit 60) "Room"
     $ vBox
         [ strWrap desc
         , str ""
@@ -470,9 +473,7 @@ drawRoomDescPanel desc =
 --   that @q@ (Quit) and @Q@ (Quest Log) are one shift-key apart.
 drawQuitConfirmModal :: Widget Name
 drawQuitConfirmModal =
-  centerLayer
-    $ borderWithLabel (str " Quit? ")
-    $ padAll 1
+  modalFrame id "Quit?"
     $ vBox
         [ str "Really quit this run?"
         , str ""
@@ -487,9 +488,7 @@ drawQuitConfirmModal =
 --   via 'handleLockedDoorKey'.
 drawLockedDoorModal :: String -> Widget Name
 drawLockedDoorModal keyNm =
-  centerLayer
-    $ borderWithLabel (str " Locked ")
-    $ padAll 1
+  modalFrame id "Locked"
     $ vBox
         [ str ("This door is locked. It needs the " ++ keyNm ++ ".")
         , str ""
@@ -511,8 +510,8 @@ drawLockedDoorModal keyNm =
 drawSaveMenuModal :: SaveMenu -> Widget Name
 drawSaveMenuModal sm =
   let title = case smMode sm of
-        SaveMode -> " Save Game "
-        LoadMode -> " Load Game "
+        SaveMode -> "Save Game"
+        LoadMode -> "Load Game"
       rows = zipWith (drawRow (smMode sm) (smCursor sm)) [0 ..] (smSlots sm)
       hint = case (smMode sm, smConfirm sm) of
         (_, True) ->
@@ -522,7 +521,7 @@ drawSaveMenuModal sm =
         (LoadMode, False) ->
           str "[a-z] load   x delete   Esc close"
       body = vBox $ rows ++ [str "", hint]
-  in centerLayer $ borderWithLabel (str title) $ padAll 1 body
+  in modalFrame id title body
   where
     drawRow :: SaveMenuMode -> Int -> Int -> SaveMenuEntry -> Widget Name
     drawRow mode cursor idx entry =
@@ -616,9 +615,7 @@ drawVictoryModal gs =
       statLine label value =
         str (padLabel label ++ show value)
       padLabel l = l ++ replicate (14 - length l) ' '
-  in centerLayer
-       $ borderWithLabel (str " Victory! ")
-       $ padAll 1
+  in modalFrame id "Victory!"
        $ vBox
            [ str "The dragon is slain and the dungeon falls silent."
            , str ""
