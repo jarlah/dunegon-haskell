@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Game.Types
   ( Pos
   , Dir(..)
@@ -47,14 +48,15 @@ data Dir = N | NE | E | SE | S | SW | W | NW
   deriving (Eq, Show, Enum, Bounded)
 
 dirToOffset :: Dir -> Pos
-dirToOffset N  = V2 0 (-1)
-dirToOffset NE = V2 1 (-1)
-dirToOffset E  = V2 1 0
-dirToOffset SE = V2 1 1
-dirToOffset S  = V2 0 1
-dirToOffset SW = V2 (-1) 1
-dirToOffset W  = V2 (-1) 0
-dirToOffset NW = V2 (-1) (-1)
+dirToOffset = \case
+  N  -> V2 0 (-1)
+  NE -> V2 1 (-1)
+  E  -> V2 1 0
+  SE -> V2 1 1
+  S  -> V2 0 1
+  SW -> V2 (-1) 1
+  W  -> V2 (-1) 0
+  NW -> V2 (-1) (-1)
 
 -- | Identifier for a key / lock pair. Allocated monotonically by the
 --   dungeon generator (see @gsNextKeyId@ in "Game.Core"), so no
@@ -146,13 +148,14 @@ tileAt dl (V2 x y)
   | otherwise = Just $ dlTiles dl ! (y * dlWidth dl + x)
 
 isWalkable :: Tile -> Bool
-isWalkable Floor            = True
-isWalkable (Door Open)      = True
-isWalkable StairsDown       = True
-isWalkable StairsUp         = True
-isWalkable Wall             = False
-isWalkable (Door Closed)    = False
-isWalkable (Door (Locked _)) = False
+isWalkable = \case
+  Floor             -> True
+  (Door Open)       -> True
+  StairsDown        -> True
+  StairsUp          -> True
+  Wall              -> False
+  (Door Closed)     -> False
+  (Door (Locked _)) -> False
 
 -- | Actions the player (or AI) can attempt on a turn.
 data GameAction
@@ -213,10 +216,11 @@ data MonsterKind = Rat | Goblin | Orc | Dragon
 --   noticeably tougher than any regular monster — the Dragon is
 --   roughly 4-5x the HP of the toughest regular kind.
 monsterStats :: MonsterKind -> Stats
-monsterStats Rat    = baseStats  5  2 0 3
-monsterStats Goblin = baseStats 10  4 1 4
-monsterStats Orc    = baseStats 18  6 3 5
-monsterStats Dragon = baseStats 80 12 6 4
+monsterStats = \case
+  Rat    -> baseStats  5  2 0 3
+  Goblin -> baseStats 10  4 1 4
+  Orc    -> baseStats 18  6 3 5
+  Dragon -> baseStats 80 12 6 4
 
 -- | Helper: a level-1, zero-XP stat block from hp/atk/def/speed.
 baseStats :: Int -> Int -> Int -> Int -> Stats
@@ -231,16 +235,18 @@ baseStats hp atk dfn spd = Stats
   }
 
 monsterGlyph :: MonsterKind -> Char
-monsterGlyph Rat    = 'r'
-monsterGlyph Goblin = 'g'
-monsterGlyph Orc    = 'o'
-monsterGlyph Dragon = 'D'
+monsterGlyph = \case
+  Rat    -> 'r'
+  Goblin -> 'g'
+  Orc    -> 'o'
+  Dragon -> 'D'
 
 monsterName :: MonsterKind -> String
-monsterName Rat    = "rat"
-monsterName Goblin = "goblin"
-monsterName Orc    = "orc"
-monsterName Dragon = "dragon"
+monsterName = \case
+  Rat    -> "rat"
+  Goblin -> "goblin"
+  Orc    -> "orc"
+  Dragon -> "dragon"
 
 -- | Rectangular footprint (width, height) a monster of this kind
 --   occupies. The top-left of the rectangle is the canonical
@@ -355,24 +361,26 @@ data Item
 --   the inventory screen. Follows the rogue/NetHack convention:
 --   @!@ potions, @)@ weapons, @[@ armor, @(@ keys/tools.
 itemGlyph :: Item -> Char
-itemGlyph (IPotion _) = '!'
-itemGlyph (IWeapon _) = ')'
-itemGlyph (IArmor  _) = '['
-itemGlyph (IKey    _) = '('
-itemGlyph (IArrows _) = '/'
+itemGlyph = \case
+  (IPotion _) -> '!'
+  (IWeapon _) -> ')'
+  (IArmor  _) -> '['
+  (IKey    _) -> '('
+  (IArrows _) -> '/'
 
 -- | Human-readable name for message log / inventory listing.
 itemName :: Item -> String
-itemName (IPotion HealingMinor) = "minor healing potion"
-itemName (IPotion HealingMajor) = "major healing potion"
-itemName (IWeapon ShortSword)   = "short sword"
-itemName (IWeapon LongSword)    = "long sword"
-itemName (IWeapon Bow)          = "bow"
-itemName (IArmor  LeatherArmor) = "leather armor"
-itemName (IArmor  ChainMail)    = "chain mail"
-itemName (IKey    k)            = keyName k
-itemName (IArrows 1)            = "arrow"
-itemName (IArrows n)            = "bundle of " ++ show n ++ " arrows"
+itemName = \case
+  (IPotion HealingMinor) -> "minor healing potion"
+  (IPotion HealingMajor) -> "major healing potion"
+  (IWeapon ShortSword)   -> "short sword"
+  (IWeapon LongSword)    -> "long sword"
+  (IWeapon Bow)          -> "bow"
+  (IArmor  LeatherArmor) -> "leather armor"
+  (IArmor  ChainMail)    -> "chain mail"
+  (IKey    k)            -> keyName k
+  (IArrows 1)            -> "arrow"
+  (IArrows n)            -> "bundle of " ++ show n ++ " arrows"
 
 -- | What the player is carrying. 'invItems' holds unequipped items
 --   in pickup order; 'invWeapon' / 'invArmor' are the currently
